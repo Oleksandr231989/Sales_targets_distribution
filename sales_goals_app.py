@@ -4,6 +4,7 @@ Regional Sales Goals Calculator with SKU Support
 This Streamlit app helps allocate sales targets based on strict inverse market share principles.
 Supports both growth and decline scenarios with consistent logic.
 Calculations are done at the SKU level.
+Includes monthly split of target sales based on uploaded distribution percentages.
 
 To run:
 1. Install required packages: pip install streamlit pandas numpy openpyxl
@@ -225,6 +226,58 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
     else:
         return pd.DataFrame()  # Empty DataFrame if no results
 
+def split_targets_by_month(results_df, monthly_split_df):
+    """
+    Splits the target sales into monthly values based on the monthly split percentages.
+    
+    Parameters:
+    - results_df: DataFrame with the calculated targets
+    - monthly_split_df: DataFrame with monthly split percentages per SKU
+    
+    Returns:
+    - DataFrame with monthly split columns added
+    """
+    # Create a copy of the results DataFrame
+    results_with_monthly = results_df.copy()
+    
+    # Get the column names that represent months (all numeric columns except the first)
+    month_columns = [col for col in monthly_split_df.columns if col != 'SKU']
+    
+    # Initialize monthly columns in the results DataFrame
+    for col in month_columns:
+        results_with_monthly[f'Month_{col}'] = 0
+    
+    # Process each row in the results DataFrame
+    for idx, row in results_with_monthly.iterrows():
+        sku = row['SKU']
+        target_sales = row['targetSales']
+        
+        # Find the monthly split for this SKU
+        sku_split = monthly_split_df[monthly_split_df['SKU'] == sku]
+        
+        if not sku_split.empty:
+            # Apply the monthly percentages to the target sales
+            for month in month_columns:
+                # Get the percentage for this month (already as float between 0-1)
+                month_pct = sku_split[month].values[0] / 100  # Convert from percentage to decimal
+                
+                # Calculate the monthly value
+                monthly_value = round(target_sales * month_pct)
+                
+                # Store in the results DataFrame
+                results_with_monthly.loc[idx, f'Month_{month}'] = monthly_value
+            
+            # Check if the sum of monthly values equals the total target
+            monthly_sum = sum(results_with_monthly.loc[idx, f'Month_{month}'] for month in month_columns)
+            
+            # Adjust the last month to ensure the sum matches the target
+            if monthly_sum != target_sales:
+                difference = target_sales - monthly_sum
+                last_month = month_columns[-1]
+                results_with_monthly.loc[idx, f'Month_{last_month}'] += difference
+    
+    return results_with_monthly
+
 def format_percentage(value):
     """Format a number as a percentage with comma as decimal separator"""
     return f"{value:.2f}".replace('.', ',') + "%"
@@ -248,18 +301,20 @@ def main():
         st.session_state.sku_min_growth_pcts = {}
     if 'sku_product_types' not in st.session_state:
         st.session_state.sku_product_types = {}
+    if 'monthly_split_data' not in st.session_state:
+        st.session_state.monthly_split_data = None
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Upload Excel File")
-        uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'])
+        uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'], key="main_data_uploader")
         
         if uploaded_file:
             try:
                 df = pd.read_excel(uploaded_file)
-                st.success("File successfully uploaded and read!")
+                st.success("Main data file successfully uploaded and read!")
                 
                 # Convert decimal values to percentage format for display
                 percent_columns = ['MS', 'GR mkt', 'GR product']
@@ -277,13 +332,53 @@ def main():
                             display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%".replace('.', ','))
                 
             except Exception as e:
-                st.error(f"Error reading the file: {e}")
+                st.error(f"Error reading the main data file: {e}")
                 return
             
             # Allow user to select the appropriate sheet if multiple sheets exist
             if isinstance(df, dict):
                 sheet_name = st.selectbox("Select the sheet with your data:", options=list(df.keys()))
                 df = df[sheet_name]
+    
+        # Monthly Split section directly below the main file upload
+        st.subheader("Monthly Split")
+        monthly_split_file = st.file_uploader("Upload monthly distribution file", type=['xlsx', 'xls'], key="monthly_split_uploader")
+        
+        if monthly_split_file:
+            try:
+                monthly_split_df = pd.read_excel(monthly_split_file)
+                st.success("Monthly split file successfully uploaded!")
+                
+                # Validate the structure: should have SKU column and numeric month columns
+                if 'SKU' not in monthly_split_df.columns:
+                    st.error("Monthly split file must have a 'SKU' column")
+                else:
+                    # Convert percentages if needed (check if values sum to approximately 100%)
+                    row_sums = monthly_split_df.drop('SKU', axis=1).sum(axis=1)
+                    
+                    # If values sum up to ~1 or ~100, normalize them to percentages
+                    if row_sums.mean() < 2:  # Values are likely in 0-1 range
+                        monthly_split_df.iloc[:, 1:] = monthly_split_df.iloc[:, 1:] * 100
+                    
+                    # Validate that percentages sum to approximately 100% for each SKU
+                    row_sums = monthly_split_df.drop('SKU', axis=1).sum(axis=1)
+                    if not all((99 <= x <= 101) for x in row_sums):
+                        st.warning("Monthly split percentages don't sum to 100% for all SKUs. Values will be normalized.")
+                        
+                        # Normalize percentages to sum to 100%
+                        for idx, row in monthly_split_df.iterrows():
+                            row_sum = sum(row[1:])  # Skip SKU column
+                            if row_sum > 0:  # Avoid division by zero
+                                for col in monthly_split_df.columns[1:]:
+                                    monthly_split_df.at[idx, col] = (row[col] / row_sum) * 100
+                    
+                    st.session_state.monthly_split_data = monthly_split_df
+                    
+                    # Display the monthly split data
+                    st.dataframe(monthly_split_df)
+                
+            except Exception as e:
+                st.error(f"Error reading the monthly split file: {e}")
     
     if uploaded_file and 'df' in locals():
         st.session_state.data = df
@@ -378,8 +473,6 @@ def main():
                             st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
                     
                     st.markdown("---")  # Add a separator between SKUs
-            
-            # Store product type for each SKU
         else:
             st.info("Please upload a file with SKU data to set targets.")
     
@@ -404,31 +497,65 @@ def main():
                     )
                     
                     if not results.empty:
+                        # Split the targets by month if monthly split data is available
+                        if st.session_state.monthly_split_data is not None:
+                            results = split_targets_by_month(results, st.session_state.monthly_split_data)
+                        
                         st.subheader("Calculated Targets")
                         
                         # Format the results for display
+                        # Start with the base columns
+                        display_cols = ['Region', 'SKU', 'MAT market', 'MAT Product', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
+                        
+                        # Add monthly columns if they exist
+                        month_cols = [col for col in results.columns if col.startswith('Month_')]
+                        if month_cols:
+                            display_cols.extend(month_cols)
+                        
+                        # Add market weight if it exists
                         if 'marketWeight' in results.columns:
-                            display_cols = ['Region', 'SKU', 'MAT market', 'MAT Product', 'MS', 'targetSales', 'growthAmount', 'growthPercent', 'marketWeight']
-                            results_display = results[display_cols].copy()
-                            results_display.columns = ['Region', 'SKU', 'MAT market', 'MAT Product', 'Market Share (%)', 'Target Sales', 'Growth Amount', 'Growth %', 'Weight SKU, %']
-                            
-                            # Format percentages with comma as decimal separator
-                            results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
-                            results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
+                            display_cols.append('marketWeight')
+                        
+                        # Create a copy for display with properly renamed columns
+                        results_display = results[display_cols].copy()
+                        
+                        # Rename the columns for display
+                        column_mapping = {
+                            'Region': 'Region',
+                            'SKU': 'SKU',
+                            'MAT market': 'MAT market',
+                            'MAT Product': 'MAT Product',
+                            'MS': 'Market Share (%)',
+                            'targetSales': 'Target Sales',
+                            'growthAmount': 'Growth Amount',
+                            'growthPercent': 'Growth %',
+                            'marketWeight': 'Weight SKU, %'
+                        }
+                        
+                        # Add month column mappings
+                        if st.session_state.monthly_split_data is not None:
+                            month_columns = [col for col in st.session_state.monthly_split_data.columns if col != 'SKU']
+                            for i, month in enumerate(month_columns):
+                                column_mapping[f'Month_{month}'] = f'Month {month}'
+                        
+                        # Rename the columns
+                        results_display.rename(columns=column_mapping, inplace=True)
+                        
+                        # Format percentages with comma as decimal separator
+                        results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
+                        results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
+                        if 'Weight SKU, %' in results_display.columns:
                             results_display['Weight SKU, %'] = results_display['Weight SKU, %'].apply(format_percentage)
-                        else:
-                            display_cols = ['Region', 'SKU', 'MAT market', 'MAT Product', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
-                            results_display = results[display_cols].copy()
-                            results_display.columns = ['Region', 'SKU', 'MAT market', 'MAT Product', 'Market Share (%)', 'Target Sales', 'Growth Amount', 'Growth %']
-                            
-                            # Format percentages with comma as decimal separator
-                            results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
-                            results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
                         
                         # Format numeric columns as integers (no decimals)
                         integer_cols = ['MAT market', 'MAT Product', 'Target Sales', 'Growth Amount']
+                        
+                        # Add monthly columns to integer formatting
+                        integer_cols.extend([col for col in results_display.columns if col.startswith('Month ')])
+                        
                         for col in integer_cols:
-                            results_display[col] = results_display[col].astype(int)
+                            if col in results_display.columns:
+                                results_display[col] = results_display[col].astype(int)
                         
                         st.dataframe(results_display, use_container_width=True)
                         
@@ -464,7 +591,7 @@ def main():
     else:
         st.info("Please upload an Excel file with your region and SKU data to get started.")
         st.markdown("""
-        ### Expected Format
+        ### Expected Format for Main Data
         Your Excel file should have the following columns:
         - **Region**: Region name
         - **SKU**: Product SKU 
@@ -477,6 +604,15 @@ def main():
         - **GR product**: Product growth percentage
         
         *The app will use the MAT Product column as current sales and MS column for calculations.*
+        
+        ### Expected Format for Monthly Split File
+        Your Excel file should have the following structure:
+        - **SKU**: First column with the SKU names that match your main data
+        - **Month columns**: Remaining columns representing months (can be numbered 1-12, named Jan-Dec, etc.)
+        - Each row should contain percentage values for how to distribute a SKU's target across months
+        - Percentages should sum to 100% for each SKU
+        
+        *If your percentages don't exactly sum to 100%, the app will normalize them automatically.*
         """)
 
 if __name__ == "__main__":
