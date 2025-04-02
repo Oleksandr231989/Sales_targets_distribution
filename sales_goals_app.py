@@ -317,7 +317,7 @@ def main():
                 st.success("Main data file successfully uploaded and read!")
                 
                 # Convert decimal values to percentage format for display
-                percent_columns = ['MS', 'GR mkt', 'GR product']
+                percent_columns = ['MS']
                 
                 # Create a display copy for showing percentages in the UI
                 display_df = df.copy()
@@ -597,11 +597,7 @@ def main():
         - **SKU**: Product SKU 
         - **MAT market**: Market value for the region
         - **MAT Product**: Product sales for the region (current year)
-        - **MAT Market N-1**: Market value for the previous year
-        - **MAT Product N-1**: Product sales for the previous year
         - **MS**: Market share percentage
-        - **GR mkt**: Market growth percentage
-        - **GR product**: Product growth percentage
         
         *The app will use the MAT Product column as current sales and MS column for calculations.*
         
