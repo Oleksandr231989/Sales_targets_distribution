@@ -277,35 +277,19 @@ def load_product_targets(file_path):
     - DataFrame with product targets
     """
     try:
-        # First, get all available sheet names
-        xls = pd.ExcelFile(file_path)
-        available_sheets = xls.sheet_names
-        st.info(f"Available sheets in the Excel file: {', '.join(available_sheets)}")
-        
-        # Try different possible sheet name variations
-        sheet_name_variants = ['product targets', 'Product Targets', 'Product targets', 'PRODUCT TARGETS', 'product_targets']
-        
-        for sheet_name in sheet_name_variants:
-            if sheet_name in available_sheets:
-                product_targets_df = pd.read_excel(file_path, sheet_name=sheet_name)
-                st.success(f"Successfully loaded product targets from sheet: '{sheet_name}'")
-                
-                # Display the column names for debugging
-                st.info(f"Columns found in the product targets sheet: {', '.join(product_targets_df.columns)}")
-                
-                # Display the first few rows for verification
-                st.write("Preview of product targets data:")
-                st.write(product_targets_df.head())
-                
-                return product_targets_df
-                
-        # If we get here, none of the known sheet name variants were found
-        st.warning(f"Could not find a sheet named 'product targets' (or variations). Available sheets: {available_sheets}")
-        return None
-        
+        # Try to read the 'product targets' sheet directly
+        product_targets_df = pd.read_excel(file_path, sheet_name='product targets')
+        return product_targets_df
     except Exception as e:
-        st.warning(f"Could not load product targets: {e}")
-        return None
+        # If that fails, try alternative sheet names
+        try:
+            xls = pd.ExcelFile(file_path)
+            for sheet_name in xls.sheet_names:
+                if 'product' in sheet_name.lower() and 'target' in sheet_name.lower():
+                    return pd.read_excel(file_path, sheet_name=sheet_name)
+            return None
+        except Exception:
+            return None
 
 def main():
     st.title("Regional Sales Goals Calculator with SKU Support")
@@ -427,24 +411,11 @@ def main():
             
             # Initialize targets and settings from product_targets_df if available
             if st.session_state.product_targets_df is not None:
-                # Check required columns in product targets
-                column_variations = {
-                    'SKU': ['SKU', 'Sku', 'sku', 'Product', 'product', 'PRODUCT'],
-                    'Target': ['Target', 'TARGET', 'target', 'Target Sales', 'TargetSales', 'Sales Target', 'Value', 'Plan', 'plan', 'PLAN'],
-                    'Product Type': ['Product Type', 'ProductType', 'Type', 'PRODUCT TYPE'],
-                    'Growth Factor': ['Growth Factor', 'GrowthFactor', 'GROWTH FACTOR', 'factor', 'Factor'],
-                    'Min Growth Pct': ['Min Growth Pct', 'MinGrowthPct', 'Min Growth', 'MIN GROWTH PCT']
+                # Direct manual mapping for your specific file
+                column_mapping = {
+                    'SKU': 'Product',
+                    'Target': 'Plan'
                 }
-                
-                # Map actual column names to our expected column names
-                column_mapping = {}
-                for our_col, possible_cols in column_variations.items():
-                    for col in st.session_state.product_targets_df.columns:
-                        if col in possible_cols:
-                            column_mapping[our_col] = col
-                            break
-                
-                st.info(f"Found columns mapping: {column_mapping}")
                 
                 # Check if we have at least SKU and Target columns
                 if 'SKU' in column_mapping and 'Target' in column_mapping:
@@ -457,10 +428,8 @@ def main():
                             # Set target - make sure to convert to proper data type
                             try:
                                 target_value = float(row[target_col])
-                                st.info(f"Found target for {sku}: {target_value}")
                                 st.session_state.sku_targets[sku] = target_value
                             except (ValueError, TypeError):
-                                st.warning(f"Could not convert target value '{row[target_col]}' to float for SKU {sku}")
                                 continue
                             
                             # Set product type if available
@@ -499,8 +468,6 @@ def main():
                                     st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
                             else:
                                 st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
-                else:
-                    st.warning(f"Required columns 'SKU' and 'Target' not found in variations. Available columns: {st.session_state.product_targets_df.columns.tolist()}")
             
             for sku in unique_skus:
                 current_total = sku_totals.get(sku, 0)
@@ -713,13 +680,7 @@ def main():
         - **SKU**: Product SKU 
         - **MAT market**: Market value for the region
         - **MAT Product**: Product sales for the region (current year)
-        - **MAT Market N-1**: Market value for the previous year
-        - **MAT Product N-1**: Product sales for the previous year
         - **MS**: Market share percentage
-        - **GR mkt**: Market growth percentage
-        - **GR product**: Product growth percentage
-        
-        *The app will use the MAT Product column as current sales and MS column for calculations.*
         
         ### Expected Format for Monthly Split File
         Your Excel file should have the following structure:
@@ -728,15 +689,10 @@ def main():
         - Each row should contain percentage values for how to distribute a SKU's target across months
         - Percentages should sum to 100% for each SKU
         
-        *If your percentages don't exactly sum to 100%, the app will normalize them automatically.*
-        
         ### Expected Format for Product Targets Sheet
         Your Excel file should include a sheet named "product targets" with these columns:
         - **Product**: Product SKU (must match the SKUs in your main data)
         - **Plan**: Target sales value for the SKU
-        - **Product Type** (optional): "Established" or "Launch"
-        - **Growth Factor** (optional): Value between 0.5 and 5.0
-        - **Min Growth Pct** (optional): Minimum growth percentage value
         """)
 
 if __name__ == "__main__":
