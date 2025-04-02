@@ -25,7 +25,6 @@ def get_product_targets(file):
 # Main calculation function (simplified version of your original)
 def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types):
     # Your existing calculation function
-    # [Keep the original code from your implementation]
     # Create a clean copy of the dataframe
     df_clean = df.copy()
     
@@ -204,6 +203,10 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
     else:
         return pd.DataFrame()  # Empty DataFrame if no results
 
+def format_percentage(value):
+    """Format a number as a percentage with comma as decimal separator"""
+    return f"{value:.2f}".replace('.', ',') + "%"
+
 def main():
     st.title("Regional Sales Goals Calculator with SKU Support")
     
@@ -218,6 +221,8 @@ def main():
         st.session_state.sku_min_growth_pcts = {}
     if 'sku_product_types' not in st.session_state:
         st.session_state.sku_product_types = {}
+    if 'product_targets_loaded' not in st.session_state:
+        st.session_state.product_targets_loaded = False
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
@@ -234,10 +239,12 @@ def main():
                 st.success("Sales data loaded successfully!")
                 
                 # Load product targets directly and store them
-                targets = get_product_targets(uploaded_file)
-                if targets:
-                    st.session_state.sku_targets = targets
-                    st.success(f"Product targets loaded: {targets}")
+                if not st.session_state.product_targets_loaded:
+                    targets = get_product_targets(uploaded_file)
+                    if targets:
+                        st.session_state.sku_targets = targets
+                        st.session_state.product_targets_loaded = True
+                        st.success(f"Product targets loaded successfully!")
             except Exception as e:
                 st.error(f"Error: {e}")
     
@@ -261,17 +268,24 @@ def main():
                 # Get the target from session state or use current total as default
                 target_value = st.session_state.sku_targets.get(sku, float(current_total))
                 
-                # Create number input for target
-                target_total = st.number_input(
-                    f"Target Total Sales for {sku}",
-                    value=float(target_value),  # Explicitly cast to float
-                    step=1000.0,
-                    format="%.0f",
-                    key=f"target_{sku}"
+                # Create a text input for target with pre-filled value
+                st.markdown(f"**Target Total Sales for {sku}**")
+                
+                # Create a text input that looks like a standard field but is editable
+                target_text = st.text_input(
+                    f"Enter target value for {sku}",
+                    value=str(int(target_value)),  # Convert to integer then string to remove decimals
+                    key=f"target_text_{sku}",
+                    label_visibility="collapsed"  # Hide the label
                 )
                 
-                # Store the target back to session state
-                st.session_state.sku_targets[sku] = target_total
+                # Convert back to float and store
+                try:
+                    target_float = float(target_text.replace(',', ''))
+                    st.session_state.sku_targets[sku] = target_float
+                except:
+                    st.warning(f"Please enter a valid number for {sku}")
+                    st.session_state.sku_targets[sku] = float(current_total)
                 
                 # Product Type selection
                 product_type = st.selectbox(
@@ -308,13 +322,17 @@ def main():
                     st.session_state.sku_min_growth_pcts[sku] = 0.0
                 
                 # Calculate and show growth
-                if current_total > 0:
-                    growth_amount = target_total - current_total
-                    growth_percent = (growth_amount / current_total) * 100
-                    if growth_amount >= 0:
-                        st.write(f"Total Growth Needed: {growth_amount:,.0f} ({growth_percent:.2f}%)")
-                    else:
-                        st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
+                try:
+                    target_value = float(target_text.replace(',', ''))
+                    if current_total > 0:
+                        growth_amount = target_value - current_total
+                        growth_percent = (growth_amount / current_total) * 100
+                        if growth_amount >= 0:
+                            st.write(f"Total Growth Needed: {growth_amount:,.0f} ({growth_percent:.2f}%)")
+                        else:
+                            st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
+                except:
+                    pass
                 
                 st.markdown("---")
         
@@ -335,10 +353,38 @@ def main():
                 
                 if not results.empty:
                     st.subheader("Calculated Targets")
-                    st.dataframe(results)
+                    
+                    # Format the results for display
+                    display_cols = ['Region', 'SKU', 'MAT market', 'MAT Product', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
+                    if 'marketWeight' in results.columns:
+                        display_cols.append('marketWeight')
+                    
+                    results_display = results[display_cols].copy()
+                    
+                    # Rename columns
+                    column_mapping = {
+                        'Region': 'Region',
+                        'SKU': 'SKU',
+                        'MAT market': 'MAT market',
+                        'MAT Product': 'MAT Product',
+                        'MS': 'Market Share (%)',
+                        'targetSales': 'Target Sales',
+                        'growthAmount': 'Growth Amount',
+                        'growthPercent': 'Growth %',
+                        'marketWeight': 'Weight SKU, %'
+                    }
+                    results_display.rename(columns=column_mapping, inplace=True)
+                    
+                    # Format percentages
+                    results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
+                    results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
+                    if 'Weight SKU, %' in results_display.columns:
+                        results_display['Weight SKU, %'] = results_display['Weight SKU, %'].apply(format_percentage)
+                    
+                    st.dataframe(results_display)
                     
                     # Add download buttons
-                    csv = results.to_csv(index=False)
+                    csv = results_display.to_csv(index=False)
                     st.download_button(
                         label="Download Results as CSV",
                         data=csv,
@@ -350,7 +396,7 @@ def main():
                     try:
                         buffer = io.BytesIO()
                         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                            results.to_excel(writer, sheet_name='Sales Targets', index=False)
+                            results_display.to_excel(writer, sheet_name='Sales Targets', index=False)
                         excel_data = buffer.getvalue()
                         st.download_button(
                             label="Download Results as Excel",
