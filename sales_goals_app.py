@@ -5,7 +5,6 @@ This Streamlit app helps allocate sales targets based on strict inverse market s
 Supports both growth and decline scenarios with consistent logic.
 Calculations are done at the SKU level.
 Includes monthly split of target sales based on uploaded distribution percentages.
-Supports automatic target detection from a separate Excel file.
 
 To run:
 1. Install required packages: pip install streamlit pandas numpy openpyxl
@@ -304,14 +303,12 @@ def main():
         st.session_state.sku_product_types = {}
     if 'monthly_split_data' not in st.session_state:
         st.session_state.monthly_split_data = None
-    if 'target_data' not in st.session_state:
-        st.session_state.target_data = None
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Upload Historical Data")
+        st.subheader("Upload Excel File")
         uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'], key="main_data_uploader")
         
         if uploaded_file:
@@ -320,7 +317,7 @@ def main():
                 st.success("Main data file successfully uploaded and read!")
                 
                 # Convert decimal values to percentage format for display
-                percent_columns = ['MS']
+                percent_columns = ['MS', 'GR mkt', 'GR product']
                 
                 # Create a display copy for showing percentages in the UI
                 display_df = df.copy()
@@ -342,54 +339,8 @@ def main():
             if isinstance(df, dict):
                 sheet_name = st.selectbox("Select the sheet with your data:", options=list(df.keys()))
                 df = df[sheet_name]
-        
-        # Upload Target Data right after the main data upload (in the same column)
-        st.subheader("Upload Target Data")
-        target_file = st.file_uploader("Upload your Excel file with target sales by SKU", type=['xlsx', 'xls'], key="target_data_uploader")
-        
-        if target_file:
-            try:
-                target_df = pd.read_excel(target_file)
-                st.success("Target data file successfully uploaded!")
-                
-                # Look for columns containing target/SKU information
-                target_col = None
-                sku_col = None
-                
-                # Try to find the right columns based on common naming patterns
-                for col in target_df.columns:
-                    col_lower = col.lower()
-                    if 'target' in col_lower or 'targ' in col_lower or 'goal' in col_lower or 'sale' in col_lower:
-                        target_col = col
-                    if 'sku' in col_lower or 'product' in col_lower or 'item' in col_lower:
-                        sku_col = col
-                
-                # If we didn't find columns by name, try to infer by position (2nd column often has target values)
-                if target_col is None and len(target_df.columns) >= 2:
-                    target_col = target_df.columns[1]
-                
-                # If we still didn't find a SKU column, use the first column
-                if sku_col is None and len(target_df.columns) >= 1:
-                    sku_col = target_df.columns[0]
-                
-                if sku_col is not None and target_col is not None:
-                    st.success(f"Using '{sku_col}' as product identifier and '{target_col}' as target values")
-                    
-                    # Store the target data for later use
-                    st.session_state.target_data = {
-                        'df': target_df,
-                        'sku_col': sku_col,
-                        'target_col': target_col
-                    }
-                    
-                    # Display the target data
-                    st.dataframe(target_df[[sku_col, target_col]])
-                else:
-                    st.error("Could not identify SKU and Target columns in the uploaded file")
-            except Exception as e:
-                st.error(f"Error reading the target data file: {e}")
     
-        # Monthly Split section directly below the target data upload
+        # Monthly Split section directly below the main file upload
         st.subheader("Monthly Split")
         monthly_split_file = st.file_uploader("Upload monthly distribution file", type=['xlsx', 'xls'], key="monthly_split_uploader")
         
@@ -445,19 +396,6 @@ def main():
             # Calculate and display current totals by SKU
             sku_totals = st.session_state.data.groupby('SKU')['MAT Product'].sum()
             
-            # Apply targets from uploaded file if available
-            if st.session_state.target_data is not None:
-                target_data = st.session_state.target_data
-                for _, row in target_data['df'].iterrows():
-                    sku = row[target_data['sku_col']]
-                    if sku in unique_skus:
-                        try:
-                            target_value = float(row[target_data['target_col']])
-                            st.session_state.sku_targets[sku] = target_value
-                        except (ValueError, TypeError):
-                            # Skip if target value can't be converted to float
-                            pass
-            
             for sku in unique_skus:
                 current_total = sku_totals.get(sku, 0)
                 
@@ -466,13 +404,10 @@ def main():
                     st.markdown(f"### SKU: {sku}")
                     st.metric(f"Current Total Product Sales", f"{current_total:,.0f}")
                     
-                    # Pre-fill with uploaded target if available, otherwise use current total
-                    default_value = st.session_state.sku_targets.get(sku, float(current_total))
-                    
                     # Target input for this SKU
                     target_total = st.number_input(
                         f"Target Total Sales for {sku}",
-                        value=default_value,
+                        value=float(current_total),
                         step=1000.0,
                         format="%.0f",
                         key=f"target_{sku}"
@@ -662,14 +597,13 @@ def main():
         - **SKU**: Product SKU 
         - **MAT market**: Market value for the region
         - **MAT Product**: Product sales for the region (current year)
+        - **MAT Market N-1**: Market value for the previous year
+        - **MAT Product N-1**: Product sales for the previous year
         - **MS**: Market share percentage
+        - **GR mkt**: Market growth percentage
+        - **GR product**: Product growth percentage
         
         *The app will use the MAT Product column as current sales and MS column for calculations.*
-        
-        ### Expected Format for Target Data
-        Your Excel file should have the following columns:
-        - **SKU**: Product SKU (must match SKUs in main data)
-        - **Target**: Target sales value for the SKU
         
         ### Expected Format for Monthly Split File
         Your Excel file should have the following structure:
