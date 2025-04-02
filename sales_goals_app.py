@@ -303,12 +303,14 @@ def main():
         st.session_state.sku_product_types = {}
     if 'monthly_split_data' not in st.session_state:
         st.session_state.monthly_split_data = None
+    if 'target_data' not in st.session_state:
+        st.session_state.target_data = None
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("Upload Excel File")
+        st.subheader("Upload Historical Data")
         uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'], key="main_data_uploader")
         
         if uploaded_file:
@@ -392,6 +394,31 @@ def main():
     with col2:
         st.subheader("Total Figures by SKU")
         
+        # Add option to upload targets from Excel file
+        st.subheader("Upload Target Data")
+        target_file = st.file_uploader("Upload your Excel file with target sales by SKU", type=['xlsx', 'xls'], key="target_data_uploader")
+        
+        if target_file:
+            try:
+                target_df = pd.read_excel(target_file)
+                st.success("Target data file successfully uploaded!")
+                
+                # Validate the structure: should have SKU and Target columns
+                if 'SKU' in target_df.columns and any(col for col in target_df.columns if 'Target' in col or 'target' in col or 'TARGET' in col):
+                    target_col = next(col for col in target_df.columns if 'Target' in col or 'target' in col or 'TARG' in col)
+                    
+                    # Store targets in session state
+                    for _, row in target_df.iterrows():
+                        sku = row['SKU']
+                        if sku in unique_skus:
+                            st.session_state.sku_targets[sku] = float(row[target_col])
+                    
+                    st.success(f"Loaded targets for {len(target_df)} SKUs")
+                else:
+                    st.error("Target file must have 'SKU' and a column containing 'Target' in the name")
+            except Exception as e:
+                st.error(f"Error reading the target data file: {e}")
+        
         if st.session_state.data is not None and len(unique_skus) > 0:
             # Calculate and display current totals by SKU
             sku_totals = st.session_state.data.groupby('SKU')['MAT Product'].sum()
@@ -404,10 +431,13 @@ def main():
                     st.markdown(f"### SKU: {sku}")
                     st.metric(f"Current Total Product Sales", f"{current_total:,.0f}")
                     
+                    # Pre-fill with uploaded target if available, otherwise use current total
+                    default_value = st.session_state.sku_targets.get(sku, float(current_total))
+                    
                     # Target input for this SKU
                     target_total = st.number_input(
                         f"Target Total Sales for {sku}",
-                        value=float(current_total),
+                        value=default_value,
                         step=1000.0,
                         format="%.0f",
                         key=f"target_{sku}"
@@ -600,6 +630,11 @@ def main():
         - **MS**: Market share percentage
         
         *The app will use the MAT Product column as current sales and MS column for calculations.*
+        
+        ### Expected Format for Target Data
+        Your Excel file should have the following columns:
+        - **SKU**: Product SKU (must match SKUs in main data)
+        - **Target**: Target sales value for the SKU
         
         ### Expected Format for Monthly Split File
         Your Excel file should have the following structure:
