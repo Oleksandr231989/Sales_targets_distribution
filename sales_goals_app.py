@@ -5,42 +5,33 @@ import io
 
 st.set_page_config(page_title="Regional Sales Goals Calculator with SKU Support", layout="wide")
 
-def clean_percentage(value):
-    """Convert percentage string values to float (handling comma as decimal separator)"""
-    if isinstance(value, str):
-        # Replace comma with dot (for European number format)
-        value = value.replace(',', '.')
-        # Remove % sign if present
-        value = value.replace('%', '')
-        # Try to convert to float
-        try:
-            return float(value)
-        except ValueError:
-            return 0
-    return value
+# Function to load product targets from Excel file
+def get_product_targets(file):
+    try:
+        # Try to read the 'product targets' sheet
+        targets_df = pd.read_excel(file, sheet_name='product targets')
+        
+        # Convert to simple dictionary
+        targets = {}
+        for _, row in targets_df.iterrows():
+            product = row['Product']
+            plan = float(row['Plan'])  # Convert to float
+            targets[product] = plan
+            
+        return targets
+    except:
+        return {}
 
+# Main calculation function (simplified version of your original)
 def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types):
-    """
-    Calculate sales targets based on product type and parameters.
-    - For Established products: uses inverse market share principle
-    - For Launch products: distributes based on market size weight
-    
-    Parameters:
-    - df: DataFrame with region and SKU data including current sales and market share
-    - sku_targets: Dict with SKU as key and target sales as value
-    - sku_growth_factors: Dict with SKU as key and growth factor as value
-    - sku_min_growth_pcts: Dict with SKU as key and minimum growth percentage as value
-    - sku_product_types: Dict with SKU as key and product type as value ("Launch" or "Established")
-    
-    Returns:
-    - DataFrame with calculated targets
-    """
+    # Your existing calculation function
+    # [Keep the original code from your implementation]
     # Create a clean copy of the dataframe
     df_clean = df.copy()
     
     # Convert MS to float if it's a string or has percentage format
     if df_clean['MS'].dtype == 'O':  # Object type means it might be a string
-        df_clean['MS'] = df_clean['MS'].apply(clean_percentage)
+        df_clean['MS'] = df_clean['MS'].apply(lambda x: float(str(x).replace(',', '.').replace('%', '')) if isinstance(x, str) else x)
     
     # Check if values are too small (likely in decimal format instead of percentage)
     # If the maximum MS value is less than 1, multiply all values by 100
@@ -213,93 +204,10 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
     else:
         return pd.DataFrame()  # Empty DataFrame if no results
 
-def split_targets_by_month(results_df, monthly_split_df):
-    """
-    Splits the target sales into monthly values based on the monthly split percentages.
-    
-    Parameters:
-    - results_df: DataFrame with the calculated targets
-    - monthly_split_df: DataFrame with monthly split percentages per SKU
-    
-    Returns:
-    - DataFrame with monthly split columns added
-    """
-    # Create a copy of the results DataFrame
-    results_with_monthly = results_df.copy()
-    
-    # Get the column names that represent months (all numeric columns except the first)
-    month_columns = [col for col in monthly_split_df.columns if col != 'SKU']
-    
-    # Initialize monthly columns in the results DataFrame
-    for col in month_columns:
-        results_with_monthly[f'Month_{col}'] = 0
-    
-    # Process each row in the results DataFrame
-    for idx, row in results_with_monthly.iterrows():
-        sku = row['SKU']
-        target_sales = row['targetSales']
-        
-        # Find the monthly split for this SKU
-        sku_split = monthly_split_df[monthly_split_df['SKU'] == sku]
-        
-        if not sku_split.empty:
-            # Apply the monthly percentages to the target sales
-            for month in month_columns:
-                # Get the percentage for this month (already as float between 0-1)
-                month_pct = sku_split[month].values[0] / 100  # Convert from percentage to decimal
-                
-                # Calculate the monthly value
-                monthly_value = round(target_sales * month_pct)
-                
-                # Store in the results DataFrame
-                results_with_monthly.loc[idx, f'Month_{month}'] = monthly_value
-            
-            # Check if the sum of monthly values equals the total target
-            monthly_sum = sum(results_with_monthly.loc[idx, f'Month_{month}'] for month in month_columns)
-            
-            # Adjust the last month to ensure the sum matches the target
-            if monthly_sum != target_sales:
-                difference = target_sales - monthly_sum
-                last_month = month_columns[-1]
-                results_with_monthly.loc[idx, f'Month_{last_month}'] += difference
-    
-    return results_with_monthly
-
-def format_percentage(value):
-    """Format a number as a percentage with comma as decimal separator"""
-    return f"{value:.2f}".replace('.', ',') + "%"
-
-def load_product_targets(file_path):
-    """
-    Load product targets from the 'product targets' sheet in the Excel file.
-    
-    Returns:
-    - DataFrame with product targets
-    """
-    try:
-        # Try to read the 'product targets' sheet directly
-        product_targets_df = pd.read_excel(file_path, sheet_name='product targets')
-        return product_targets_df
-    except Exception as e:
-        # If that fails, try alternative sheet names
-        try:
-            xls = pd.ExcelFile(file_path)
-            for sheet_name in xls.sheet_names:
-                if 'product' in sheet_name.lower() and 'target' in sheet_name.lower():
-                    return pd.read_excel(file_path, sheet_name=sheet_name)
-            return None
-        except Exception:
-            return None
-
 def main():
     st.title("Regional Sales Goals Calculator with SKU Support")
     
-    st.write("""
-    This app helps you set sales goals per region and SKU based on strict inverse market share principles. 
-    The calculator supports both growth and decline scenarios.
-    """)
-    
-    # Initialize session state variables at the beginning
+    # Initialize session state variables for storing data
     if 'data' not in st.session_state:
         st.session_state.data = None
     if 'sku_targets' not in st.session_state:
@@ -310,411 +218,152 @@ def main():
         st.session_state.sku_min_growth_pcts = {}
     if 'sku_product_types' not in st.session_state:
         st.session_state.sku_product_types = {}
-    if 'monthly_split_data' not in st.session_state:
-        st.session_state.monthly_split_data = None
-    if 'product_targets_df' not in st.session_state:
-        st.session_state.product_targets_df = None
-    if 'targets_loaded' not in st.session_state:
-        st.session_state.targets_loaded = False
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Upload Excel File")
-        uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'], key="main_data_uploader")
+        uploaded_file = st.file_uploader("Upload your Excel file with region and SKU data", type=['xlsx', 'xls'])
         
         if uploaded_file:
             try:
                 # Read the main data from the "sales data" sheet
                 df = pd.read_excel(uploaded_file, sheet_name="sales data")
-                st.success("Main data file successfully uploaded and read!")
+                st.session_state.data = df
+                st.success("Sales data loaded successfully!")
                 
-                # Load product targets
-                product_targets_df = load_product_targets(uploaded_file)
-                if product_targets_df is not None:
-                    st.session_state.product_targets_df = product_targets_df
-                    st.success("Product targets successfully loaded!")
-                    
-                    # Immediately set targets for the SKUs
-                    try:
-                        # Hardcoded mapping for your exact file
-                        targets_dict = {}
-                        for _, row in product_targets_df.iterrows():
-                            product = row['Product']
-                            plan = float(row['Plan'])
-                            targets_dict[product] = plan
-                        
-                        # Set these in session state
-                        st.session_state.sku_targets = targets_dict
-                        st.session_state.targets_loaded = True
-                        
-                        # Show confirmation
-                        st.success(f"Target values loaded: {targets_dict}")
-                    except Exception as e:
-                        st.error(f"Error setting targets: {e}")
-                
-                # Convert decimal values to percentage format for display
-                percent_columns = ['MS', 'GR mkt', 'GR product']
-                
-                # Create a display copy for showing percentages in the UI
-                display_df = df.copy()
-                
-                for col in percent_columns:
-                    if col in display_df.columns:
-                        # Check if values are in decimal format (less than 1)
-                        if display_df[col].max() < 1:
-                            # For display only, format as percentages
-                            display_df[col] = display_df[col].apply(lambda x: f"{(x*100):.2f}%".replace('.', ','))
-                        else:
-                            display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%".replace('.', ','))
-                
+                # Load product targets directly and store them
+                targets = get_product_targets(uploaded_file)
+                if targets:
+                    st.session_state.sku_targets = targets
+                    st.success(f"Product targets loaded: {targets}")
             except Exception as e:
-                st.error(f"Error reading the main data file: {e}")
-                return
+                st.error(f"Error: {e}")
     
-        # Monthly Split section directly below the main file upload
-        st.subheader("Monthly Split")
-        monthly_split_file = st.file_uploader("Upload monthly distribution file", type=['xlsx', 'xls'], key="monthly_split_uploader")
-        
-        if monthly_split_file:
-            try:
-                monthly_split_df = pd.read_excel(monthly_split_file)
-                st.success("Monthly split file successfully uploaded!")
-                
-                # Validate the structure: should have SKU column and numeric month columns
-                if 'SKU' not in monthly_split_df.columns:
-                    st.error("Monthly split file must have a 'SKU' column")
-                else:
-                    # Convert percentages if needed (check if values sum to approximately 100%)
-                    row_sums = monthly_split_df.drop('SKU', axis=1).sum(axis=1)
-                    
-                    # If values sum up to ~1 or ~100, normalize them to percentages
-                    if row_sums.mean() < 2:  # Values are likely in 0-1 range
-                        monthly_split_df.iloc[:, 1:] = monthly_split_df.iloc[:, 1:] * 100
-                    
-                    # Validate that percentages sum to approximately 100% for each SKU
-                    row_sums = monthly_split_df.drop('SKU', axis=1).sum(axis=1)
-                    if not all((99 <= x <= 101) for x in row_sums):
-                        st.warning("Monthly split percentages don't sum to 100% for all SKUs. Values will be normalized.")
-                        
-                        # Normalize percentages to sum to 100%
-                        for idx, row in monthly_split_df.iterrows():
-                            row_sum = sum(row[1:])  # Skip SKU column
-                            if row_sum > 0:  # Avoid division by zero
-                                for col in monthly_split_df.columns[1:]:
-                                    monthly_split_df.at[idx, col] = (row[col] / row_sum) * 100
-                    
-                    st.session_state.monthly_split_data = monthly_split_df
-                    
-                    # Display the monthly split data
-                    st.dataframe(monthly_split_df)
-                
-            except Exception as e:
-                st.error(f"Error reading the monthly split file: {e}")
-    
-    if uploaded_file and 'df' in locals():
-        st.session_state.data = df
-        
-    # Get list of unique SKUs for target settings
-    if st.session_state.data is not None and 'SKU' in st.session_state.data.columns:
-        unique_skus = st.session_state.data['SKU'].unique()
-    else:
-        unique_skus = []
-        
-    with col2:
-        st.subheader("Total Figures by SKU")
-        
-        if st.session_state.data is not None and len(unique_skus) > 0:
-            # Calculate and display current totals by SKU
+    # Display SKU targets and options
+    if st.session_state.data is not None:
+        with col2:
+            st.subheader("Total Figures by SKU")
+            
+            # Get unique SKUs and calculate totals
+            unique_skus = st.session_state.data['SKU'].unique()
             sku_totals = st.session_state.data.groupby('SKU')['MAT Product'].sum()
             
-            # Initialize targets and settings from product_targets_df if available
-            if st.session_state.product_targets_df is not None and not st.session_state.targets_loaded:
-                # Direct manual mapping for your specific file
-                column_mapping = {
-                    'SKU': 'Product',
-                    'Target': 'Plan'
-                }
-                
-                # Check if we have at least SKU and Target columns
-                if 'SKU' in column_mapping and 'Target' in column_mapping:
-                    for _, row in st.session_state.product_targets_df.iterrows():
-                        sku_col = column_mapping['SKU']
-                        target_col = column_mapping['Target']
-                        
-                        sku = row[sku_col]
-                        if sku in unique_skus:
-                            # Set target - make sure to convert to proper data type
-                            try:
-                                target_value = float(row[target_col])
-                                st.session_state.sku_targets[sku] = target_value
-                            except (ValueError, TypeError):
-                                continue
-                            
-                            # Set product type if available
-                            if 'Product Type' in column_mapping:
-                                prod_type_col = column_mapping['Product Type']
-                                prod_type = row[prod_type_col]
-                                if pd.notna(prod_type) and str(prod_type) in ["Established", "Launch"]:
-                                    st.session_state.sku_product_types[sku] = str(prod_type)
-                                else:
-                                    st.session_state.sku_product_types[sku] = "Established"  # Default
-                            else:
-                                st.session_state.sku_product_types[sku] = "Established"  # Default
-                            
-                            # Set growth factor if available
-                            if 'Growth Factor' in column_mapping:
-                                growth_factor_col = column_mapping['Growth Factor']
-                                if pd.notna(row[growth_factor_col]):
-                                    try:
-                                        st.session_state.sku_growth_factors[sku] = float(row[growth_factor_col])
-                                    except (ValueError, TypeError):
-                                        st.session_state.sku_growth_factors[sku] = 1.0  # Default
-                                else:
-                                    st.session_state.sku_growth_factors[sku] = 1.0  # Default
-                            else:
-                                st.session_state.sku_growth_factors[sku] = 1.0  # Default
-                            
-                            # Set min growth percentage if available
-                            if 'Min Growth Pct' in column_mapping:
-                                min_growth_col = column_mapping['Min Growth Pct']
-                                if pd.notna(row[min_growth_col]):
-                                    try:
-                                        st.session_state.sku_min_growth_pcts[sku] = float(row[min_growth_col])
-                                    except (ValueError, TypeError):
-                                        st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
-                                else:
-                                    st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
-                            else:
-                                st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
-            
+            # Display each SKU's settings
             for sku in unique_skus:
-                current_total = sku_totals.get(sku, 0)
+                st.markdown(f"### SKU: {sku}")
                 
-                # Create a container for each SKU
-                with st.container():
-                    st.markdown(f"### SKU: {sku}")
-                    st.metric(f"Current Total Product Sales", f"{current_total:,.0f}")
-                    
-                    # Target input for this SKU (pre-filled from product targets if available)
-                    target_value = st.session_state.sku_targets.get(sku, float(current_total))
-                    st.write(f"Using target value: {target_value:,.0f}")  # Display the value used
-                    target_total = st.number_input(
-                        f"Target Total Sales for {sku}",
-                        value=target_value,
-                        step=1000.0,
-                        format="%.0f",
-                        key=f"target_{sku}"
+                # Display current total
+                current_total = sku_totals.get(sku, 0)
+                st.metric("Current Total Product Sales", f"{current_total:,.0f}")
+                
+                # Get the target from session state or use current total as default
+                target_value = st.session_state.sku_targets.get(sku, float(current_total))
+                
+                # Create number input for target
+                target_total = st.number_input(
+                    f"Target Total Sales for {sku}",
+                    value=float(target_value),  # Explicitly cast to float
+                    step=1000.0,
+                    format="%.0f",
+                    key=f"target_{sku}"
+                )
+                
+                # Store the target back to session state
+                st.session_state.sku_targets[sku] = target_total
+                
+                # Product Type selection
+                product_type = st.selectbox(
+                    f"Product Type for {sku}",
+                    options=["Established", "Launch"],
+                    key=f"product_type_{sku}"
+                )
+                st.session_state.sku_product_types[sku] = product_type
+                
+                # Only show growth factor for Established products
+                if product_type == "Established":
+                    growth_factor = st.slider(
+                        f"Growth Distribution Factor for {sku}",
+                        min_value=0.5,
+                        max_value=5.0,
+                        value=1.0,
+                        step=0.1,
+                        key=f"growth_factor_{sku}"
                     )
+                    st.session_state.sku_growth_factors[sku] = growth_factor
                     
-                    # Store the target for this SKU
-                    st.session_state.sku_targets[sku] = target_total
-                    
-                    # Product Type selection for this SKU (pre-filled from product targets if available)
-                    product_type_default = st.session_state.sku_product_types.get(sku, "Established")
-                    product_type = st.selectbox(
-                        f"Product Type for {sku}",
-                        options=["Established", "Launch"],
-                        index=0 if product_type_default == "Established" else 1,
-                        key=f"product_type_{sku}"
+                    min_growth_pct = st.number_input(
+                        f"Minimum Growth % per Region for {sku}",
+                        min_value=-50.0,
+                        max_value=15.0,
+                        value=0.5,
+                        step=0.5,
+                        key=f"min_growth_{sku}"
                     )
-                    
-                    # Store the product type for this SKU
-                    st.session_state.sku_product_types[sku] = product_type
-                    
-                    # Growth Distribution Factor only shown for Established products
-                    if product_type == "Established":
-                        growth_factor_default = st.session_state.sku_growth_factors.get(sku, 1.0)
-                        growth_factor = st.slider(
-                            f"Growth Distribution Factor for {sku}",
-                            min_value=0.5,
-                            max_value=5.0,
-                            value=growth_factor_default,
-                            step=0.1,
-                            key=f"growth_factor_{sku}",
-                            help="Higher values make the difference between high and low market share regions more pronounced"
-                        )
-                        
-                        # Store the growth factor for this SKU
-                        st.session_state.sku_growth_factors[sku] = growth_factor
-                        
-                        # Minimum Growth Percentage for this SKU
-                        min_growth_default = st.session_state.sku_min_growth_pcts.get(sku, 0.5)
-                        min_growth_pct = st.number_input(
-                            f"Minimum Growth % per Region for {sku}",
-                            min_value=-50.0,
-                            max_value=15.0,
-                            value=min_growth_default,
-                            step=0.5,
-                            key=f"min_growth_{sku}",
-                            help="Set the minimum growth percentage (or maximum decline if negative) that any region should have"
-                        )
-                        
-                        # Store the minimum growth percentage for this SKU
-                        st.session_state.sku_min_growth_pcts[sku] = min_growth_pct
+                    st.session_state.sku_min_growth_pcts[sku] = min_growth_pct
+                else:
+                    st.info("Launch products use market size distribution")
+                    st.session_state.sku_growth_factors[sku] = 1.0
+                    st.session_state.sku_min_growth_pcts[sku] = 0.0
+                
+                # Calculate and show growth
+                if current_total > 0:
+                    growth_amount = target_total - current_total
+                    growth_percent = (growth_amount / current_total) * 100
+                    if growth_amount >= 0:
+                        st.write(f"Total Growth Needed: {growth_amount:,.0f} ({growth_percent:.2f}%)")
                     else:
-                        # For Launch products, show an info message about the distribution method
-                        st.info(f"For Launch products, targets will be distributed based on market size (MAT market) proportions.")
-                        
-                        # Set default values for growth factor and min growth (won't be used but needed for function call)
-                        st.session_state.sku_growth_factors[sku] = 1.0
-                        st.session_state.sku_min_growth_pcts[sku] = 0.0
-                    
-                    if current_total > 0:
-                        growth_amount = target_total - current_total
-                        growth_percent = (growth_amount / current_total) * 100
-                        
-                        # Display growth or decline info with appropriate phrasing
-                        if growth_amount >= 0:
-                            st.write(f"Total Growth Needed: {growth_amount:,.0f} ({growth_percent:.2f}%)")
-                        else:
-                            st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
-                    
-                    st.markdown("---")  # Add a separator between SKUs
-        else:
-            st.info("Please upload a file with SKU data to set targets.")
-    
-    # Display the data and results
-    if st.session_state.data is not None:
+                        st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
+                
+                st.markdown("---")
+        
+        # Show the data
         st.subheader("Regional Data")
-        if 'display_df' in locals():
-            st.dataframe(display_df)
-        else:
-            st.dataframe(st.session_state.data)
+        st.dataframe(st.session_state.data)
         
-        # Display the product targets if available
-        if st.session_state.product_targets_df is not None:
-            st.subheader("Product Targets from File")
-            st.dataframe(st.session_state.product_targets_df)
-        
+        # Calculate button
         if st.button("Calculate Targets"):
-            if len(st.session_state.sku_targets) > 0:
-                with st.spinner("Calculating targets..."):
-                    # Calculate targets by SKU
-                    results = calculate_targets_by_sku(
-                        st.session_state.data, 
-                        st.session_state.sku_targets,
-                        st.session_state.sku_growth_factors,
-                        st.session_state.sku_min_growth_pcts,
-                        st.session_state.sku_product_types
+            with st.spinner("Calculating..."):
+                results = calculate_targets_by_sku(
+                    st.session_state.data,
+                    st.session_state.sku_targets,
+                    st.session_state.sku_growth_factors,
+                    st.session_state.sku_min_growth_pcts,
+                    st.session_state.sku_product_types
+                )
+                
+                if not results.empty:
+                    st.subheader("Calculated Targets")
+                    st.dataframe(results)
+                    
+                    # Add download buttons
+                    csv = results.to_csv(index=False)
+                    st.download_button(
+                        label="Download Results as CSV",
+                        data=csv,
+                        file_name="sales_targets.csv",
+                        mime="text/csv"
                     )
                     
-                    if not results.empty:
-                        # Split the targets by month if monthly split data is available
-                        if st.session_state.monthly_split_data is not None:
-                            results = split_targets_by_month(results, st.session_state.monthly_split_data)
-                        
-                        st.subheader("Calculated Targets")
-                        
-                        # Format the results for display
-                        # Start with the base columns
-                        display_cols = ['Region', 'SKU', 'MAT market', 'MAT Product', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
-                        
-                        # Add monthly columns if they exist
-                        month_cols = [col for col in results.columns if col.startswith('Month_')]
-                        if month_cols:
-                            display_cols.extend(month_cols)
-                        
-                        # Add market weight if it exists
-                        if 'marketWeight' in results.columns:
-                            display_cols.append('marketWeight')
-                        
-                        # Create a copy for display with properly renamed columns
-                        results_display = results[display_cols].copy()
-                        
-                        # Rename the columns for display
-                        column_mapping = {
-                            'Region': 'Region',
-                            'SKU': 'SKU',
-                            'MAT market': 'MAT market',
-                            'MAT Product': 'MAT Product',
-                            'MS': 'Market Share (%)',
-                            'targetSales': 'Target Sales',
-                            'growthAmount': 'Growth Amount',
-                            'growthPercent': 'Growth %',
-                            'marketWeight': 'Weight SKU, %'
-                        }
-                        
-                        # Add month column mappings
-                        if st.session_state.monthly_split_data is not None:
-                            month_columns = [col for col in st.session_state.monthly_split_data.columns if col != 'SKU']
-                            for i, month in enumerate(month_columns):
-                                column_mapping[f'Month_{month}'] = f'Month {month}'
-                        
-                        # Rename the columns
-                        results_display.rename(columns=column_mapping, inplace=True)
-                        
-                        # Format percentages with comma as decimal separator
-                        results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
-                        results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
-                        if 'Weight SKU, %' in results_display.columns:
-                            results_display['Weight SKU, %'] = results_display['Weight SKU, %'].apply(format_percentage)
-                        
-                        # Format numeric columns as integers (no decimals)
-                        integer_cols = ['MAT market', 'MAT Product', 'Target Sales', 'Growth Amount']
-                        
-                        # Add monthly columns to integer formatting
-                        integer_cols.extend([col for col in results_display.columns if col.startswith('Month ')])
-                        
-                        for col in integer_cols:
-                            if col in results_display.columns:
-                                results_display[col] = results_display[col].astype(int)
-                        
-                        st.dataframe(results_display, use_container_width=True)
-                        
-                        # Add download button for the results
-                        csv = results_display.to_csv(index=False)
+                    # Excel download
+                    try:
+                        buffer = io.BytesIO()
+                        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                            results.to_excel(writer, sheet_name='Sales Targets', index=False)
+                        excel_data = buffer.getvalue()
                         st.download_button(
-                            label="Download Results as CSV",
-                            data=csv,
-                            file_name="sales_targets_by_sku.csv",
-                            mime="text/csv"
+                            label="Download Results as Excel",
+                            data=excel_data,
+                            file_name="sales_targets.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
-                        
-                        # Add an Excel download option
-                        try:
-                            buffer = io.BytesIO()
-                            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                                results_display.to_excel(writer, sheet_name='Sales Targets', index=False)
-                            
-                            excel_data = buffer.getvalue()
-                            st.download_button(
-                                label="Download Results as Excel",
-                                data=excel_data,
-                                file_name="sales_targets_by_sku.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        except Exception as e:
-                            st.error(f"Error creating Excel file: {e}")
-                            st.info("Please install openpyxl package with: pip install openpyxl")
-                    else:
-                        st.warning("No results were generated. Please check your SKU targets.")
-            else:
-                st.warning("Please set targets for at least one SKU before calculating.")
+                    except Exception as e:
+                        st.error(f"Error creating Excel file: {e}")
+                else:
+                    st.warning("No results generated. Please check your SKU targets.")
     else:
-        st.info("Please upload an Excel file with your region and SKU data to get started.")
-        st.markdown("""
-        ### Expected Format for Main Data
-        Your Excel file should have the following columns:
-        - **Region**: Region name
-        - **SKU**: Product SKU 
-        - **MAT market**: Market value for the region
-        - **MAT Product**: Product sales for the region (current year)
-        - **MS**: Market share percentage
-        
-        ### Expected Format for Monthly Split File
-        Your Excel file should have the following structure:
-        - **SKU**: First column with the SKU names that match your main data
-        - **Month columns**: Remaining columns representing months (can be numbered 1-12, named Jan-Dec, etc.)
-        - Each row should contain percentage values for how to distribute a SKU's target across months
-        - Percentages should sum to 100% for each SKU
-        
-        ### Expected Format for Product Targets Sheet
-        Your Excel file should include a sheet named "product targets" with these columns:
-        - **Product**: Product SKU (must match the SKUs in your main data)
-        - **Plan**: Target sales value for the SKU
-        """)
+        st.info("Please upload an Excel file to get started.")
 
 if __name__ == "__main__":
     main()
