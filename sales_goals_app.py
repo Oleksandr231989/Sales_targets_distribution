@@ -314,6 +314,8 @@ def main():
         st.session_state.monthly_split_data = None
     if 'product_targets_df' not in st.session_state:
         st.session_state.product_targets_df = None
+    if 'targets_loaded' not in st.session_state:
+        st.session_state.targets_loaded = False
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
@@ -332,7 +334,25 @@ def main():
                 product_targets_df = load_product_targets(uploaded_file)
                 if product_targets_df is not None:
                     st.session_state.product_targets_df = product_targets_df
-                    st.success("Product targets successfully loaded from 'product targets' sheet!")
+                    st.success("Product targets successfully loaded!")
+                    
+                    # Immediately set targets for the SKUs
+                    try:
+                        # Hardcoded mapping for your exact file
+                        targets_dict = {}
+                        for _, row in product_targets_df.iterrows():
+                            product = row['Product']
+                            plan = float(row['Plan'])
+                            targets_dict[product] = plan
+                        
+                        # Set these in session state
+                        st.session_state.sku_targets = targets_dict
+                        st.session_state.targets_loaded = True
+                        
+                        # Show confirmation
+                        st.success(f"Target values loaded: {targets_dict}")
+                    except Exception as e:
+                        st.error(f"Error setting targets: {e}")
                 
                 # Convert decimal values to percentage format for display
                 percent_columns = ['MS', 'GR mkt', 'GR product']
@@ -410,7 +430,7 @@ def main():
             sku_totals = st.session_state.data.groupby('SKU')['MAT Product'].sum()
             
             # Initialize targets and settings from product_targets_df if available
-            if st.session_state.product_targets_df is not None:
+            if st.session_state.product_targets_df is not None and not st.session_state.targets_loaded:
                 # Direct manual mapping for your specific file
                 column_mapping = {
                     'SKU': 'Product',
@@ -479,6 +499,7 @@ def main():
                     
                     # Target input for this SKU (pre-filled from product targets if available)
                     target_value = st.session_state.sku_targets.get(sku, float(current_total))
+                    st.write(f"Using target value: {target_value:,.0f}")  # Display the value used
                     target_total = st.number_input(
                         f"Target Total Sales for {sku}",
                         value=target_value,
