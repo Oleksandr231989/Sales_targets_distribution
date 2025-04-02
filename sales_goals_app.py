@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 
-st.set_page_config(page_title="Regional Sales Goals Calculator with SKU Support", layout="wide")
+st.set_page_config(page_title="Regional Sales Goals Calculator", layout="wide")
 
 # Function to load product targets from Excel file
 def get_product_targets(file):
