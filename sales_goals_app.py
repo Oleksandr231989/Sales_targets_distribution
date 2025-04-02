@@ -16,7 +16,7 @@ import pandas as pd
 import numpy as np
 import io
 
-st.set_page_config(page_title="Regional Sales Goals Calculator with SKU Support", layout="wide")
+st.set_page_config(page_title="Regional Sales Goals Calculator", layout="wide")
 
 def clean_percentage(value):
     """Convert percentage string values to float (handling comma as decimal separator)"""
