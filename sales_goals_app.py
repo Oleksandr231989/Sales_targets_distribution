@@ -277,9 +277,32 @@ def load_product_targets(file_path):
     - DataFrame with product targets
     """
     try:
-        # Try to read the 'product targets' sheet
-        product_targets_df = pd.read_excel(file_path, sheet_name='product targets')
-        return product_targets_df
+        # First, get all available sheet names
+        xls = pd.ExcelFile(file_path)
+        available_sheets = xls.sheet_names
+        st.info(f"Available sheets in the Excel file: {', '.join(available_sheets)}")
+        
+        # Try different possible sheet name variations
+        sheet_name_variants = ['product targets', 'Product Targets', 'Product targets', 'PRODUCT TARGETS', 'product_targets']
+        
+        for sheet_name in sheet_name_variants:
+            if sheet_name in available_sheets:
+                product_targets_df = pd.read_excel(file_path, sheet_name=sheet_name)
+                st.success(f"Successfully loaded product targets from sheet: '{sheet_name}'")
+                
+                # Display the column names for debugging
+                st.info(f"Columns found in the product targets sheet: {', '.join(product_targets_df.columns)}")
+                
+                # Display the first few rows for verification
+                st.write("Preview of product targets data:")
+                st.write(product_targets_df.head())
+                
+                return product_targets_df
+                
+        # If we get here, none of the known sheet name variants were found
+        st.warning(f"Could not find a sheet named 'product targets' (or variations). Available sheets: {available_sheets}")
+        return None
+        
     except Exception as e:
         st.warning(f"Could not load product targets: {e}")
         return None
@@ -405,36 +428,79 @@ def main():
             # Initialize targets and settings from product_targets_df if available
             if st.session_state.product_targets_df is not None:
                 # Check required columns in product targets
-                required_columns = ['SKU', 'Target']
-                if all(col in st.session_state.product_targets_df.columns for col in required_columns):
-                    # Populate initial values from the targets sheet
+                column_variations = {
+                    'SKU': ['SKU', 'Sku', 'sku', 'Product', 'product', 'PRODUCT'],
+                    'Target': ['Target', 'TARGET', 'target', 'Target Sales', 'TargetSales', 'Sales Target', 'Value', 'Plan', 'plan', 'PLAN'],
+                    'Product Type': ['Product Type', 'ProductType', 'Type', 'PRODUCT TYPE'],
+                    'Growth Factor': ['Growth Factor', 'GrowthFactor', 'GROWTH FACTOR', 'factor', 'Factor'],
+                    'Min Growth Pct': ['Min Growth Pct', 'MinGrowthPct', 'Min Growth', 'MIN GROWTH PCT']
+                }
+                
+                # Map actual column names to our expected column names
+                column_mapping = {}
+                for our_col, possible_cols in column_variations.items():
+                    for col in st.session_state.product_targets_df.columns:
+                        if col in possible_cols:
+                            column_mapping[our_col] = col
+                            break
+                
+                st.info(f"Found columns mapping: {column_mapping}")
+                
+                # Check if we have at least SKU and Target columns
+                if 'SKU' in column_mapping and 'Target' in column_mapping:
                     for _, row in st.session_state.product_targets_df.iterrows():
-                        sku = row['SKU']
+                        sku_col = column_mapping['SKU']
+                        target_col = column_mapping['Target']
+                        
+                        sku = row[sku_col]
                         if sku in unique_skus:
-                            # Set target
-                            st.session_state.sku_targets[sku] = float(row['Target'])
+                            # Set target - make sure to convert to proper data type
+                            try:
+                                target_value = float(row[target_col])
+                                st.info(f"Found target for {sku}: {target_value}")
+                                st.session_state.sku_targets[sku] = target_value
+                            except (ValueError, TypeError):
+                                st.warning(f"Could not convert target value '{row[target_col]}' to float for SKU {sku}")
+                                continue
                             
                             # Set product type if available
-                            if 'Product Type' in row:
-                                prod_type = row['Product Type']
-                                if pd.notna(prod_type) and prod_type in ["Established", "Launch"]:
-                                    st.session_state.sku_product_types[sku] = prod_type
+                            if 'Product Type' in column_mapping:
+                                prod_type_col = column_mapping['Product Type']
+                                prod_type = row[prod_type_col]
+                                if pd.notna(prod_type) and str(prod_type) in ["Established", "Launch"]:
+                                    st.session_state.sku_product_types[sku] = str(prod_type)
                                 else:
                                     st.session_state.sku_product_types[sku] = "Established"  # Default
                             else:
                                 st.session_state.sku_product_types[sku] = "Established"  # Default
                             
                             # Set growth factor if available
-                            if 'Growth Factor' in row and pd.notna(row['Growth Factor']):
-                                st.session_state.sku_growth_factors[sku] = float(row['Growth Factor'])
+                            if 'Growth Factor' in column_mapping:
+                                growth_factor_col = column_mapping['Growth Factor']
+                                if pd.notna(row[growth_factor_col]):
+                                    try:
+                                        st.session_state.sku_growth_factors[sku] = float(row[growth_factor_col])
+                                    except (ValueError, TypeError):
+                                        st.session_state.sku_growth_factors[sku] = 1.0  # Default
+                                else:
+                                    st.session_state.sku_growth_factors[sku] = 1.0  # Default
                             else:
                                 st.session_state.sku_growth_factors[sku] = 1.0  # Default
                             
                             # Set min growth percentage if available
-                            if 'Min Growth Pct' in row and pd.notna(row['Min Growth Pct']):
-                                st.session_state.sku_min_growth_pcts[sku] = float(row['Min Growth Pct'])
+                            if 'Min Growth Pct' in column_mapping:
+                                min_growth_col = column_mapping['Min Growth Pct']
+                                if pd.notna(row[min_growth_col]):
+                                    try:
+                                        st.session_state.sku_min_growth_pcts[sku] = float(row[min_growth_col])
+                                    except (ValueError, TypeError):
+                                        st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
+                                else:
+                                    st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
                             else:
                                 st.session_state.sku_min_growth_pcts[sku] = 0.5  # Default
+                else:
+                    st.warning(f"Required columns 'SKU' and 'Target' not found in variations. Available columns: {st.session_state.product_targets_df.columns.tolist()}")
             
             for sku in unique_skus:
                 current_total = sku_totals.get(sku, 0)
@@ -666,8 +732,8 @@ def main():
         
         ### Expected Format for Product Targets Sheet
         Your Excel file should include a sheet named "product targets" with these columns:
-        - **SKU**: Product SKU (must match the SKUs in your main data)
-        - **Target**: Target sales value for the SKU
+        - **Product**: Product SKU (must match the SKUs in your main data)
+        - **Plan**: Target sales value for the SKU
         - **Product Type** (optional): "Established" or "Launch"
         - **Growth Factor** (optional): Value between 0.5 and 5.0
         - **Min Growth Pct** (optional): Minimum growth percentage value
