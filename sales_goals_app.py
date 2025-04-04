@@ -1,5 +1,5 @@
 """
-Regional Sales Goals Calculator with SKU Support
+Regional Sales Goals Calculator
 -------------------------------
 This Streamlit app helps allocate sales targets based on strict inverse market share principles.
 Supports both growth and decline scenarios with consistent logic.
@@ -282,8 +282,44 @@ def format_percentage(value):
     """Format a number as a percentage with comma as decimal separator"""
     return f"{value:.2f}".replace('.', ',') + "%"
 
+def get_product_targets_from_sheet(excel_file):
+    """
+    Extract product targets from the 'product targets' sheet in the Excel file
+    
+    Parameters:
+    - excel_file: Uploaded Excel file
+    
+    Returns:
+    - DataFrame with SKU targets and product types
+    """
+    try:
+        # Try to read the 'product targets' sheet
+        targets_df = pd.read_excel(excel_file, sheet_name='product targets')
+        
+        # Check if the sheet has the required columns
+        required_columns = ['SKU', 'Target']
+        if not all(col in targets_df.columns for col in required_columns):
+            st.warning("The 'product targets' sheet should contain at least 'SKU' and 'Target' columns.")
+            return pd.DataFrame()
+            
+        # Check for optional columns
+        if 'Product Type' not in targets_df.columns:
+            targets_df['Product Type'] = 'Established'  # Default value
+            
+        if 'Growth Factor' not in targets_df.columns:
+            targets_df['Growth Factor'] = 1.0  # Default value
+            
+        if 'Min Growth %' not in targets_df.columns:
+            targets_df['Min Growth %'] = 0.5  # Default value
+            
+        return targets_df
+        
+    except Exception as e:
+        st.warning(f"Could not read 'product targets' sheet: {e}")
+        return pd.DataFrame()
+
 def main():
-    st.title("Regional Sales Goals Calculator with SKU Support")
+    st.title("Regional Sales Goals Calculator")
     
     st.write("""
     This app helps you set sales goals per region and SKU based on strict inverse market share principles. 
@@ -303,6 +339,8 @@ def main():
         st.session_state.sku_product_types = {}
     if 'monthly_split_data' not in st.session_state:
         st.session_state.monthly_split_data = None
+    if 'product_targets_df' not in st.session_state:
+        st.session_state.product_targets_df = None
     
     # Create two columns for the inputs
     col1, col2 = st.columns(2)
@@ -313,7 +351,18 @@ def main():
         
         if uploaded_file:
             try:
-                df = pd.read_excel(uploaded_file)
+                # Read all sheets to check for product targets sheet first
+                excel_file = pd.ExcelFile(uploaded_file)
+                sheet_names = excel_file.sheet_names
+                
+                # Check if 'product targets' sheet exists
+                has_product_targets = 'product targets' in sheet_names
+                
+                # Read the main data
+                # Always use the "sales data" sheet for main data
+                df = pd.read_excel(uploaded_file, sheet_name="sales data")
+                st.session_state.data = df
+                
                 st.success("Main data file successfully uploaded and read!")
                 
                 # Convert decimal values to percentage format for display
@@ -331,14 +380,24 @@ def main():
                         else:
                             display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%".replace('.', ','))
                 
+                # If product targets sheet exists, don't display it separately anymore
+                if has_product_targets:
+                    product_targets_df = get_product_targets_from_sheet(uploaded_file)
+                    if not product_targets_df.empty:
+                        st.session_state.product_targets_df = product_targets_df
+                        st.success("Product targets successfully loaded from 'product targets' sheet!")
+                        
+                        # Update session state with targets from sheet
+                        for _, row in product_targets_df.iterrows():
+                            sku = row['SKU']
+                            st.session_state.sku_targets[sku] = row['Target']
+                            st.session_state.sku_product_types[sku] = row.get('Product Type', 'Established')
+                            st.session_state.sku_growth_factors[sku] = row.get('Growth Factor', 1.0)
+                            st.session_state.sku_min_growth_pcts[sku] = row.get('Min Growth %', 0.5)
+                
             except Exception as e:
                 st.error(f"Error reading the main data file: {e}")
                 return
-            
-            # Allow user to select the appropriate sheet if multiple sheets exist
-            if isinstance(df, dict):
-                sheet_name = st.selectbox("Select the sheet with your data:", options=list(df.keys()))
-                df = df[sheet_name]
     
         # Monthly Split section directly below the main file upload
         st.subheader("Monthly Split")
@@ -385,7 +444,7 @@ def main():
         
     # Get list of unique SKUs for target settings
     if st.session_state.data is not None and 'SKU' in st.session_state.data.columns:
-        unique_skus = st.session_state.data['SKU'].unique()
+        unique_skus = st.session_state.data['SKU'].unique().tolist()  # Convert NumPy array to Python list
     else:
         unique_skus = []
         
@@ -393,86 +452,116 @@ def main():
         st.subheader("Total Figures by SKU")
         
         if st.session_state.data is not None and len(unique_skus) > 0:
-            # Calculate and display current totals by SKU
+            # Check if we need to show manual inputs (only if no product targets sheet was found)
+            show_manual_inputs = st.session_state.product_targets_df is None or st.session_state.product_targets_df.empty
+            
+            # Calculate current totals by SKU
             sku_totals = st.session_state.data.groupby('SKU')['MAT Product'].sum()
             
-            for sku in unique_skus:
+            # Create a more efficient layout for multiple SKUs
+            # Use tabs to organize SKUs
+            tabs = st.tabs(unique_skus)
+            
+            for i, sku in enumerate(unique_skus):
                 current_total = sku_totals.get(sku, 0)
                 
-                # Create a container for each SKU
-                with st.container():
-                    st.markdown(f"### SKU: {sku}")
-                    st.metric(f"Current Total Product Sales", f"{current_total:,.0f}")
+                # Create a tab for each SKU
+                with tabs[i]:
+                    # Create columns for better space usage
+                    col1_tab, col2_tab = st.columns(2)
                     
-                    # Target input for this SKU
-                    target_total = st.number_input(
-                        f"Target Total Sales for {sku}",
-                        value=float(current_total),
-                        step=1000.0,
-                        format="%.0f",
-                        key=f"target_{sku}"
-                    )
+                    with col1_tab:
+                        st.metric("Current Total Product Sales", f"{current_total:,.0f}")
+                        
+                        # Process input based on whether we have targets from sheet or need manual input
+                        if show_manual_inputs:
+                            # Manual input controls
+                            target_total = st.number_input(
+                                "Target Total Sales",
+                                value=float(current_total),
+                                step=1000.0,
+                                format="%.0f",
+                                key=f"target_{sku}"
+                            )
+                            
+                            # Store the target for this SKU
+                            st.session_state.sku_targets[sku] = target_total
+                        else:
+                            # Display values from the product targets sheet
+                            target_row = st.session_state.product_targets_df[st.session_state.product_targets_df['SKU'] == sku]
+                            if not target_row.empty:
+                                target_total = target_row.iloc[0]['Target']
+                                st.session_state.sku_targets[sku] = target_total
+                                st.write(f"**Target Total Sales:** {target_total:,.0f}")
                     
-                    # Store the target for this SKU
-                    st.session_state.sku_targets[sku] = target_total
+                    with col2_tab:
+                        # Product Type selection with dropdown
+                        if show_manual_inputs:
+                            product_type = st.selectbox(
+                                "Product Type",
+                                options=["Established", "Launch"],
+                                key=f"product_type_{sku}"
+                            )
+                        else:
+                            # Get product type from the targets sheet
+                            target_row = st.session_state.product_targets_df[st.session_state.product_targets_df['SKU'] == sku]
+                            if not target_row.empty:
+                                default_product_type = target_row.iloc[0].get('Product Type', 'Established')
+                                product_type = st.selectbox(
+                                    "Product Type",
+                                    options=["Established", "Launch"],
+                                    index=0 if default_product_type == "Established" else 1,
+                                    key=f"product_type_select_{sku}"
+                                )
+                            else:
+                                product_type = "Established"
+                        
+                        # Store the product type in the session state
+                        st.session_state.sku_product_types[sku] = product_type
                     
-                    # Product Type selection for this SKU (Launch or Established)
-                    product_type = st.selectbox(
-                        f"Product Type for {sku}",
-                        options=["Established", "Launch"],
-                        key=f"product_type_{sku}"
-                    )
-                    
-                    # Store the product type for this SKU
-                    st.session_state.sku_product_types[sku] = product_type
-                    
-                    # Growth Distribution Factor only shown for Established products
+                    # Growth Factor only for Established products
                     if product_type == "Established":
+                        # Get default values
+                        if not show_manual_inputs and not target_row.empty:
+                            default_growth_factor = target_row.iloc[0].get('Growth Factor', 1.0)
+                        else:
+                            default_growth_factor = 1.0
+                        
+                        # Growth Distribution Factor slider
                         growth_factor = st.slider(
                             f"Growth Distribution Factor for {sku}",
                             min_value=0.5,
                             max_value=5.0,
-                            value=1.0,
+                            value=float(default_growth_factor),
                             step=0.1,
                             key=f"growth_factor_{sku}",
                             help="Higher values make the difference between high and low market share regions more pronounced"
                         )
                         
-                        # Store the growth factor for this SKU
+                        # Store the growth factor in the session state
                         st.session_state.sku_growth_factors[sku] = growth_factor
                         
-                        # Minimum Growth Percentage for this SKU
-                        min_growth_pct = st.number_input(
-                            f"Minimum Growth % per Region for {sku}",
-                            min_value=-50.0,
-                            max_value=15.0,
-                            value=0.5,
-                            step=0.5,
-                            key=f"min_growth_{sku}",
-                            help="Set the minimum growth percentage (or maximum decline if negative) that any region should have"
-                        )
-                        
-                        # Store the minimum growth percentage for this SKU
-                        st.session_state.sku_min_growth_pcts[sku] = min_growth_pct
+                        # Set a fixed default value for min growth percentage
+                        st.session_state.sku_min_growth_pcts[sku] = 0.5
                     else:
                         # For Launch products, show an info message about the distribution method
-                        st.info(f"For Launch products, targets will be distributed based on market size (MAT market) proportions.")
+                        st.info("For Launch products, targets will be distributed based on market size (MAT market) proportions.")
                         
                         # Set default values for growth factor and min growth (won't be used but needed for function call)
                         st.session_state.sku_growth_factors[sku] = 1.0
                         st.session_state.sku_min_growth_pcts[sku] = 0.0
                     
-                    if current_total > 0:
+                    # Display growth information
+                    if current_total > 0 and sku in st.session_state.sku_targets:
+                        target_total = st.session_state.sku_targets[sku]
                         growth_amount = target_total - current_total
                         growth_percent = (growth_amount / current_total) * 100
                         
                         # Display growth or decline info with appropriate phrasing
                         if growth_amount >= 0:
-                            st.write(f"Total Growth Needed: {growth_amount:,.0f} ({growth_percent:.2f}%)")
+                            st.write(f"**Total Growth Needed:** {growth_amount:,.0f} ({growth_percent:.2f}%)")
                         else:
-                            st.write(f"Total Reduction Needed: {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
-                    
-                    st.markdown("---")  # Add a separator between SKUs
+                            st.write(f"**Total Reduction Needed:** {abs(growth_amount):,.0f} ({growth_percent:.2f}%)")
         else:
             st.info("Please upload a file with SKU data to set targets.")
     
@@ -597,9 +686,19 @@ def main():
         - **SKU**: Product SKU 
         - **MAT market**: Market value for the region
         - **MAT Product**: Product sales for the region (current year)
+        - **GR mkt**: Market growth percentage
+        - **GR product**: Product growth percentage
         - **MS**: Market share percentage
-
+        
         *The app will use the MAT Product column as current sales and MS column for calculations.*
+        
+        ### Expected Format for Product Targets Sheet
+        Your Excel file can include a sheet named 'product targets' with the following columns:
+        - **SKU**: Product SKU (must match SKUs in main data)
+        - **Target**: Target sales value for each SKU
+        - **Product Type**: 'Established' or 'Launch' (optional, defaults to 'Established')
+        - **Growth Factor**: Value between 0.5 and 5.0 for Established products (optional, defaults to 1.0)
+        - **Min Growth %**: Minimum growth percentage (optional, defaults to 0.5%)
         
         ### Expected Format for Monthly Split File
         Your Excel file should have the following structure:
