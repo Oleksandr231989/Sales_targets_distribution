@@ -1,7 +1,7 @@
 """
 Regional Sales Goals Calculator
 -------------------------------
-This Streamlit app allocates sales targets based on inverse market share principles.
+This Streamlit app allocates sales targets based on market share index principles.
 Supports growth and decline scenarios with SKU-level calculations and monthly splits.
 
 To run:
@@ -72,7 +72,7 @@ def clean_percentage(value):
 def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types):
     """
     Calculate sales targets by SKU based on product type.
-    Established products use inverse market share; Launch products use market size weights.
+    Established products use market share index; Launch products use market size weights.
     """
     df_clean = df.copy()
     
@@ -94,31 +94,55 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
         if product_type == "Established":
             growth_factor = sku_growth_factors.get(sku, 1.0)
             min_growth_pct = sku_min_growth_pcts.get(sku, 0.5)
-            sku_sorted = sku_group.sort_values('MS', ascending=False).copy()
             
+            # Calculate average market share across regions
+            avg_market_share = sku_group['MS'].mean()
+            
+            # Create a copy of the group and calculate market share index
+            sku_with_index = sku_group.copy()
+            sku_with_index['MS_Index'] = (sku_with_index['MS'] / avg_market_share) * 100
+            
+            # Sort by market share index (descending)
+            sku_sorted = sku_with_index.sort_values('MS_Index', ascending=False).copy()
+            
+            # Calculate the inverse index (higher for lower market share)
+            sku_sorted['Inverse_Index'] = 200 - sku_sorted['MS_Index']
+            sku_sorted['Inverse_Index'] = sku_sorted['Inverse_Index'].clip(lower=10)  # Ensure minimum value
+            
+            # Apply growth factor to the inverse index
+            if growth_factor != 1.0:
+                sku_sorted['Inverse_Index'] = np.power(sku_sorted['Inverse_Index'] / 100, growth_factor) * 100
+            
+            # Normalize the inverse index to get proper growth distribution
             overall_growth_pct = (total_target_sales / total_current_sales - 1) * 100
             is_decline = overall_growth_pct < 0
-            n_regions = len(sku_sorted)
-            positions = np.arange(n_regions)
-            
-            if growth_factor != 1.0 and n_regions > 1:
-                normalized_positions = positions / (n_regions - 1)
-                positions = np.power(normalized_positions, growth_factor) * (n_regions - 1)
             
             if is_decline:
-                if n_regions > 1:
-                    positions = (n_regions - 1) - positions
                 max_decline_pct = min(overall_growth_pct * 2, min_growth_pct - 0.1)
                 effective_range = min_growth_pct - max_decline_pct
-                sku_sorted['growthPercent'] = min_growth_pct - (positions / max(1, n_regions - 1)) * effective_range if n_regions > 1 else overall_growth_pct
+                
+                # Normalize inverse index for decline scenario
+                total_inverse = sku_sorted['Inverse_Index'].sum()
+                sku_sorted['Inverse_Weight'] = sku_sorted['Inverse_Index'] / total_inverse
+                
+                # Calculate growth percentage based on inverse weight
+                sku_sorted['growthPercent'] = min_growth_pct - sku_sorted['Inverse_Weight'] * effective_range * len(sku_sorted)
             else:
                 max_growth_pct = max(overall_growth_pct * 2, min_growth_pct + 0.1)
                 effective_range = max_growth_pct - min_growth_pct
-                sku_sorted['growthPercent'] = min_growth_pct + (positions / max(1, n_regions - 1)) * effective_range if n_regions > 1 else overall_growth_pct
+                
+                # Normalize inverse index for growth scenario
+                total_inverse = sku_sorted['Inverse_Index'].sum()
+                sku_sorted['Inverse_Weight'] = sku_sorted['Inverse_Index'] / total_inverse
+                
+                # Calculate growth percentage based on inverse weight
+                sku_sorted['growthPercent'] = min_growth_pct + sku_sorted['Inverse_Weight'] * effective_range * len(sku_sorted)
             
+            # Calculate target sales based on growth percentages
             sku_sorted['targetSales'] = (sku_sorted['Product sales'] * (1 + sku_sorted['growthPercent'] / 100)).round(2)
             sku_sorted['growthAmount'] = (sku_sorted['targetSales'] - sku_sorted['Product sales']).round(2)
             
+            # Adjust to ensure total matches the target
             current_total = sku_sorted['targetSales'].sum()
             if current_total != total_target_sales:
                 difference = total_target_sales - current_total
@@ -134,8 +158,11 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                     sku_sorted['targetSales'] = (sku_sorted['Product sales'] + sku_sorted['growthAmount']).round(2)
                     sku_sorted['growthPercent'] = (sku_sorted['growthAmount'] / sku_sorted['Product sales'] * 100).round(2).where(sku_sorted['Product sales'] > 0, 0)
             
-            results.append(sku_sorted)
+            # Clean up temporary columns
+            results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight']]
+            results.append(sku_sorted[results_columns])
         else:
+            # Launch products logic remains unchanged
             sku_group_with_targets = sku_group.copy()
             total_market_size = sku_group_with_targets['Market sales'].sum()
             
@@ -248,7 +275,7 @@ def initialize_session_state():
 
 def main():
     st.title("Regional Sales Goals Calculator")
-    st.write("Set regional sales goals per SKU using inverse market share principles, supporting both growth and decline scenarios.")
+    st.write("Set regional sales goals per SKU using market share index principles, supporting both growth and decline scenarios.")
     
     initialize_session_state()
     
@@ -376,7 +403,7 @@ def main():
                             options=["Established", "Launch"],
                             index=0 if st.session_state.sku_product_types[selected_sku] == "Established" else 1,
                             key=f"product_type_{selected_sku}",
-                            help="'Established' uses inverse market share; 'Launch' uses market size weights."
+                            help="'Established' uses market share index; 'Launch' uses market size weights."
                         )
                     else:
                         target_row = st.session_state.product_targets_df[st.session_state.product_targets_df['SKU'] == selected_sku]
@@ -386,7 +413,7 @@ def main():
                             options=["Established", "Launch"],
                             index=0 if default_product_type == "Established" else 1,
                             key=f"product_type_select_{selected_sku}",
-                            help="'Established' uses inverse market share; 'Launch' uses market size weights."
+                            help="'Established' uses market share index; 'Launch' uses market size weights."
                         )
                     
                     st.session_state.sku_product_types[selected_sku] = product_type
