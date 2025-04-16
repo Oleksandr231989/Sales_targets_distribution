@@ -533,7 +533,7 @@ def main():
                 st.error(f"Error creating Excel file: {e}")
                 st.info("Install openpyxl: pip install openpyxl")
 
-        # Visualization: Compare Product Sales and Target
+        # Visualization: Compare Product Sales and Target with Market Share on Secondary Axis
         if st.session_state.results_display is not None:
             st.subheader("Sales Comparison by Region")
             
@@ -569,10 +569,17 @@ def main():
                     st.warning("No data available for the selected SKUs.")
                     return
 
-                # Prepare data for grouped bar chart
+                # Prepare data for grouped bar chart (Product sales and Target sales)
                 try:
-                    # Melt the DataFrame to long format for Altair
-                    chart_data = filtered_results.melt(
+                    # Aggregate Product sales and Target Sales by Region
+                    aggregated_data = filtered_results.groupby('Region').agg({
+                        'Product sales': 'sum',
+                        'Target Sales': 'sum',
+                        'Market sales': 'sum'
+                    }).reset_index()
+
+                    # Melt the aggregated DataFrame to long format for Altair (for bars)
+                    bar_data = aggregated_data.melt(
                         id_vars=['Region'],
                         value_vars=['Product sales', 'Target Sales'],
                         var_name='Sales Type',
@@ -580,18 +587,39 @@ def main():
                     )
 
                     # Rename 'Target Sales' to 'Target'
-                    chart_data['Sales Type'] = chart_data['Sales Type'].replace('Target Sales', 'Target')
+                    bar_data['Sales Type'] = bar_data['Sales Type'].replace('Target Sales', 'Target')
 
-                    # Create grouped bar chart with Altair
-                    chart = alt.Chart(chart_data).mark_bar().encode(
-                        x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45)),
-                        y=alt.Y('Sales:Q', title='Sales'),
+                    # Calculate Market Share per region: sum(Product sales) / sum(Market sales) * 100
+                    market_share_data = aggregated_data.copy()
+                    market_share_data['Market_Share_Pct'] = (market_share_data['Product sales'] / market_share_data['Market sales'] * 100).round(2)
+
+                    # Calculate total Product sales per region for sorting
+                    sort_data = aggregated_data.sort_values('Product sales', ascending=False)
+
+                    # Create the bar chart for Product sales and Target sales
+                    bar_chart = alt.Chart(bar_data).mark_bar().encode(
+                        x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45), 
+                                sort=sort_data['Region'].tolist()),  # Sort regions by Product sales
+                        y=alt.Y('Sales:Q', title='Sales', axis=alt.Axis(titleColor='#1f77b4')),
                         xOffset='Sales Type:N',  # Group bars by Sales Type
                         color=alt.Color('Sales Type:N', scale=alt.Scale(
                             domain=['Product sales', 'Target'],
                             range=['#1f77b4', '#ff7f0e']
                         ), legend=alt.Legend(title='Sales Type')),
-                        tooltip=['Region', 'Sales Type', 'Sales']
+                        tooltip=['Region', 'Sales Type', alt.Tooltip('Sales:Q', format='.2f')]
+                    )
+
+                    # Create the line chart for Market Share on a secondary axis
+                    line_chart = alt.Chart(market_share_data).mark_line(color='green').encode(
+                        x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45), 
+                                sort=sort_data['Region'].tolist()),  # Apply the same sorting
+                        y=alt.Y('Market_Share_Pct:Q', title='Market Share (%)', axis=alt.Axis(titleColor='green')),
+                        tooltip=['Region', alt.Tooltip('Market_Share_Pct:Q', title='Market Share (%)', format='.2f')]
+                    )
+
+                    # Combine the bar and line charts with a dual axis
+                    combined_chart = alt.layer(bar_chart, line_chart).resolve_scale(
+                        y='independent'  # Use independent y-axes for Sales and Market Share
                     ).properties(
                         height=600,
                         width='container'
@@ -599,8 +627,8 @@ def main():
                         labelFontSize=12
                     )
 
-                    # Display the chart
-                    st.altair_chart(chart, use_container_width=True)
+                    # Display the combined chart
+                    st.altair_chart(combined_chart, use_container_width=True)
 
                 except Exception as e:
                     st.error(f"Error creating visualization: {e}")
