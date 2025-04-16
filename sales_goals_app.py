@@ -1,18 +1,8 @@
-"""
-Regional Sales Goals Calculator
--------------------------------
-This Streamlit app allocates sales targets based on market share index principles.
-Supports growth and decline scenarios with SKU-level calculations and monthly splits.
-
-To run:
-1. Install required packages: pip install streamlit pandas numpy openpyxl
-2. Run: streamlit run this_file.py
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import altair as alt
 
 st.set_page_config(page_title="Regional Sales Goals Calculator", layout="wide")
 
@@ -162,7 +152,7 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
             results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight']]
             results.append(sku_sorted[results_columns])
         else:
-            # Launch products logic remains unchanged
+            # Launch products logic
             sku_group_with_targets = sku_group.copy()
             total_market_size = sku_group_with_targets['Market sales'].sum()
             
@@ -239,10 +229,10 @@ def format_percentage(value):
     """Format number as percentage with comma separator."""
     return f"{value:.2f}".replace('.', ',') + "%"
 
-def get_product_targets_from_sheet(excel_file):
+def get_product_targets_from_sheet(excelFile):
     """Extract product targets from 'product targets' sheet."""
     try:
-        targets_df = pd.read_excel(excel_file, sheet_name='product targets')
+        targets_df = pd.read_excel(excelFile, sheet_name='product targets')
         required_columns = ['SKU', 'Target']
         if not all(col in targets_df.columns for col in required_columns):
             st.warning("The 'product targets' sheet must have 'SKU' and 'Target' columns.")
@@ -267,7 +257,9 @@ def initialize_session_state():
         'sku_product_types': {},
         'monthly_split_data': None,
         'product_targets_df': None,
-        'last_selected_sku': None
+        'last_selected_sku': None,
+        'selected_skus': None,  # Added for SKU filter persistence
+        'results_display': None  # Added to persist calculated results
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -449,19 +441,24 @@ def main():
         if st.button("Calculate Targets", help="Calculate sales targets based on the settings above."):
             if st.session_state.sku_targets:
                 with st.spinner("Calculating targets..."):
-                    results = calculate_targets_by_sku(
-                        st.session_state.data,
-                        st.session_state.sku_targets,
-                        st.session_state.sku_growth_factors,
-                        st.session_state.sku_min_growth_pcts,
-                        st.session_state.sku_product_types
-                    )
+                    try:
+                        results = calculate_targets_by_sku(
+                            st.session_state.data,
+                            st.session_state.sku_targets,
+                            st.session_state.sku_growth_factors,
+                            st.session_state.sku_min_growth_pcts,
+                            st.session_state.sku_product_types
+                        )
+                    except Exception as e:
+                        st.error(f"Error calculating targets: {e}")
+                        return
                     
                     if not results.empty:
                         if st.session_state.monthly_split_data is not None:
-                            results = split_targets_by_month(results, st.session_state.monthly_split_data)
-                        
-                        st.subheader("Calculated Targets")
+                            try:
+                                results = split_targets_by_month(results, st.session_state.monthly_split_data)
+                            except Exception as e:
+                                st.error(f"Error splitting monthly targets: {e}")
                         
                         # Define columns to display, excluding 'marketWeight'
                         display_cols = ['Region', 'SKU', 'Market sales', 'Product sales', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
@@ -500,33 +497,116 @@ def main():
                             if col in results_display.columns:
                                 results_display[col] = results_display[col].round(2)
                         
-                        st.dataframe(results_display, use_container_width=True)
-                        
-                        csv = results_display.to_csv(index=False)
-                        st.download_button(
-                            label="Download Results as CSV",
-                            data=csv,
-                            file_name="sales_targets_by_sku.csv",
-                            mime="text/csv"
-                        )
-                        
-                        try:
-                            buffer = io.BytesIO()
-                            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                                results_display.to_excel(writer, sheet_name='Sales Targets', index=False)
-                            st.download_button(
-                                label="Download Results as Excel",
-                                data=buffer.getvalue(),
-                                file_name="sales_targets_by_sku.xlsx",
-                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                            )
-                        except Exception as e:
-                            st.error(f"Error creating Excel file: {e}")
-                            st.info("Install openpyxl: pip install openpyxl")
+                        # Store results in session state
+                        st.session_state.results_display = results_display
                     else:
                         st.warning("No results generated. Check SKU targets.")
+                        return
             else:
                 st.warning("Set targets for at least one SKU.")
+                return
+
+        # Display Calculated Targets table if results exist in session state
+        if st.session_state.results_display is not None:
+            st.subheader("Calculated Targets")
+            st.dataframe(st.session_state.results_display, use_container_width=True)
+            
+            csv = st.session_state.results_display.to_csv(index=False)
+            st.download_button(
+                label="Download Results as CSV",
+                data=csv,
+                file_name="sales_targets_by_sku.csv",
+                mime="text/csv"
+            )
+            
+            try:
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    st.session_state.results_display.to_excel(writer, sheet_name='Sales Targets', index=False)
+                st.download_button(
+                    label="Download Results as Excel",
+                    data=buffer.getvalue(),
+                    file_name="sales_targets_by_sku.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            except Exception as e:
+                st.error(f"Error creating Excel file: {e}")
+                st.info("Install openpyxl: pip install openpyxl")
+
+        # Visualization: Compare Product Sales and Target
+        if st.session_state.results_display is not None:
+            st.subheader("Sales Comparison by Region")
+            
+            # SKU Filter
+            try:
+                sku_options = st.session_state.results_display['SKU'].unique().tolist()
+                if not sku_options:
+                    st.warning("No SKUs found in the results.")
+                    return
+
+                # Initialize session state for selected SKUs if not already set
+                if 'selected_skus' not in st.session_state:
+                    st.session_state['selected_skus'] = sku_options  # Default to all SKUs
+
+                # Update selected SKUs based on user input
+                selected_skus = st.multiselect(
+                    "Select SKUs to Display",
+                    options=sku_options,
+                    default=st.session_state['selected_skus'],  # Use session state for persistence
+                    key="sku_filter"
+                )
+
+                # Ensure selected_skus is never empty before filtering
+                effective_skus = selected_skus if selected_skus else sku_options
+
+                # Update session state with the new selection
+                st.session_state['selected_skus'] = effective_skus
+
+                # Filter results based on effective SKUs
+                filtered_results = st.session_state.results_display[st.session_state.results_display['SKU'].isin(effective_skus)]
+
+                if filtered_results.empty:
+                    st.warning("No data available for the selected SKUs.")
+                    return
+
+                # Prepare data for grouped bar chart
+                try:
+                    # Melt the DataFrame to long format for Altair
+                    chart_data = filtered_results.melt(
+                        id_vars=['Region'],
+                        value_vars=['Product sales', 'Target Sales'],
+                        var_name='Sales Type',
+                        value_name='Sales'
+                    )
+
+                    # Rename 'Target Sales' to 'Target'
+                    chart_data['Sales Type'] = chart_data['Sales Type'].replace('Target Sales', 'Target')
+
+                    # Create grouped bar chart with Altair
+                    chart = alt.Chart(chart_data).mark_bar().encode(
+                        x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45)),
+                        y=alt.Y('Sales:Q', title='Sales'),
+                        xOffset='Sales Type:N',  # Group bars by Sales Type
+                        color=alt.Color('Sales Type:N', scale=alt.Scale(
+                            domain=['Product sales', 'Target'],
+                            range=['#1f77b4', '#ff7f0e']
+                        ), legend=alt.Legend(title='Sales Type')),
+                        tooltip=['Region', 'Sales Type', 'Sales']
+                    ).properties(
+                        height=600,
+                        width='container'
+                    ).configure_axis(
+                        labelFontSize=12
+                    )
+
+                    # Display the chart
+                    st.altair_chart(chart, use_container_width=True)
+
+                except Exception as e:
+                    st.error(f"Error creating visualization: {e}")
+
+            except Exception as e:
+                st.error(f"Error setting up SKU filter: {e}")
     else:
         st.info("Upload an Excel file with region and SKU data to start.")
         st.markdown("""
