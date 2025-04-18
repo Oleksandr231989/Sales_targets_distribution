@@ -95,33 +95,40 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
             # Sort by market share index (descending)
             sku_sorted = sku_with_index.sort_values('MS_Index', ascending=False).copy()
             
-            # Calculate the inverse index (higher for lower market share)
-            sku_sorted['Inverse_Index'] = 200 - sku_sorted['MS_Index']
-            sku_sorted['Inverse_Index'] = sku_sorted['Inverse_Index'].clip(lower=10)  # Ensure minimum value
-            
-            # Apply growth factor to the inverse index
-            if growth_factor != 1.0:
-                sku_sorted['Inverse_Index'] = np.power(sku_sorted['Inverse_Index'] / 100, growth_factor) * 100
-            
-            # Normalize the inverse index to get proper growth distribution
+            # Calculate overall growth percentage
             overall_growth_pct = (total_target_sales / total_current_sales - 1) * 100
             is_decline = overall_growth_pct < 0
             
             if is_decline:
+                # In decline scenario, higher MS_Index (top performers) should have smaller reductions
                 max_decline_pct = min(overall_growth_pct * 2, min_growth_pct - 0.1)
                 effective_range = min_growth_pct - max_decline_pct
                 
-                # Normalize inverse index for decline scenario
-                total_inverse = sku_sorted['Inverse_Index'].sum()
-                sku_sorted['Inverse_Weight'] = sku_sorted['Inverse_Index'] / total_inverse
+                # Apply growth factor to MS_Index (higher MS_Index means less reduction)
+                adjusted_index = sku_sorted['MS_Index'].copy()
+                if growth_factor != 1.0:
+                    adjusted_index = np.power(sku_sorted['MS_Index'] / 100, growth_factor) * 100
                 
-                # Calculate growth percentage based on inverse weight
-                sku_sorted['growthPercent'] = min_growth_pct - sku_sorted['Inverse_Weight'] * effective_range * len(sku_sorted)
+                # Normalize MS_Index for decline scenario
+                total_index = adjusted_index.sum()
+                sku_sorted['Weight'] = adjusted_index / total_index
+                
+                # Calculate growth percentage: top performers get smaller reductions
+                sku_sorted['growthPercent'] = min_growth_pct - sku_sorted['Weight'] * effective_range * len(sku_sorted)
             else:
+                # Growth scenario
+                # Calculate the inverse index (higher for lower market share)
+                sku_sorted['Inverse_Index'] = 200 - sku_sorted['MS_Index']
+                sku_sorted['Inverse_Index'] = sku_sorted['Inverse_Index'].clip(lower=10)  # Ensure minimum value
+                
+                # Apply growth factor to the inverse index
+                if growth_factor != 1.0:
+                    sku_sorted['Inverse_Index'] = np.power(sku_sorted['Inverse_Index'] / 100, growth_factor) * 100
+                
+                # Normalize inverse index for growth scenario
                 max_growth_pct = max(overall_growth_pct * 2, min_growth_pct + 0.1)
                 effective_range = max_growth_pct - min_growth_pct
                 
-                # Normalize inverse index for growth scenario
                 total_inverse = sku_sorted['Inverse_Index'].sum()
                 sku_sorted['Inverse_Weight'] = sku_sorted['Inverse_Index'] / total_inverse
                 
@@ -149,7 +156,7 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                     sku_sorted['growthPercent'] = (sku_sorted['growthAmount'] / sku_sorted['Product sales'] * 100).round(2).where(sku_sorted['Product sales'] > 0, 0)
             
             # Clean up temporary columns
-            results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight']]
+            results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight', 'Weight']]
             results.append(sku_sorted[results_columns])
         else:
             # Launch products logic
