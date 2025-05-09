@@ -510,13 +510,15 @@ def main():
                         
                         # Define columns to display, including new value columns
                         display_cols = [
-                            'Region', 'SKU', 'Market sales', 'Product sales', 'Product sales value', 'MS', 
+                            'Region', 'SKU', 'Market sales', 'Product sales', 'MS', 
                             'targetSales', 'growthAmount', 'growthPercent'
                         ]
                         
                         # Add value-related columns if available
                         if 'plan_value' in results.columns:
                             display_cols.append('plan_value')
+                        if 'Product sales value' in results.columns:
+                            display_cols.append('Product sales value')
                         if 'growthPercentValue' in results.columns:
                             display_cols.append('growthPercentValue')
                             
@@ -532,14 +534,14 @@ def main():
                         column_mapping = {
                             'Region': 'Region',
                             'SKU': 'SKU',
-                            'Market sales': 'Market sales',
-                            'Product sales': 'Product sales',
-                            'Product sales value': 'Sales previous period, value',
-                            'MS': 'Market Share (%)',
-                            'targetSales': 'Target Sales',
-                            'growthAmount': 'Growth Amount',
+                            'Market sales': 'Market sales units',
+                            'Product sales': 'Product sales units',
+                            'Product sales value': 'Product sales value',
+                            'MS': 'Market share units',
+                            'targetSales': 'Target units',
+                            'growthAmount': 'Growth units',
                             'growthPercent': 'Growth %, units',
-                            'plan_value': 'Plan, value',
+                            'plan_value': 'Target value',
                             'growthPercentValue': 'Growth %, value'
                         }
                         
@@ -551,15 +553,15 @@ def main():
                         results_display.rename(columns=column_mapping, inplace=True)
                         
                         # Format percentages
-                        results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
+                        results_display['Market share units'] = results_display['Market share units'].apply(format_percentage)
                         results_display['Growth %, units'] = results_display['Growth %, units'].apply(format_percentage)
                         if 'Growth %, value' in results_display.columns:
                             results_display['Growth %, value'] = results_display['Growth %, value'].apply(format_percentage)
                         
                         # Round numeric columns
                         numeric_cols = [
-                            'Market sales', 'Product sales', 'Sales previous period, value', 
-                            'Target Sales', 'Growth Amount', 'Plan, value'
+                            'Market sales units', 'Product sales units', 'Product sales value', 
+                            'Target units', 'Growth units', 'Target value'
                         ]
                         numeric_cols.extend([col for col in results_display.columns if col.startswith('Month ')])
                         for col in numeric_cols:
@@ -642,23 +644,23 @@ def main():
                 try:
                     # Aggregate Product sales and Target Sales by Region
                     agg_dict = {
-                        'Product sales': 'sum',
-                        'Target Sales': 'sum',
-                        'Market sales': 'sum'
+                        'Product sales units': 'sum',
+                        'Target units': 'sum',
+                        'Market sales units': 'sum'
                     }
                     
                     # Add value columns if they exist
-                    if 'Sales previous period, value' in filtered_results.columns:
-                        agg_dict['Sales previous period, value'] = 'sum'
-                    if 'Plan, value' in filtered_results.columns:
-                        agg_dict['Plan, value'] = 'sum'
+                    if 'Product sales value' in filtered_results.columns:
+                        agg_dict['Product sales value'] = 'sum'
+                    if 'Target value' in filtered_results.columns:
+                        agg_dict['Target value'] = 'sum'
                     
                     aggregated_data = filtered_results.groupby('Region').agg(agg_dict).reset_index()
 
                     # Melt the aggregated DataFrame to long format for Altair (for bars)
-                    bar_vars = ['Product sales', 'Target Sales']
-                    if 'Sales previous period, value' in aggregated_data.columns and 'Plan, value' in aggregated_data.columns:
-                        bar_vars.extend(['Sales previous period, value', 'Plan, value'])
+                    bar_vars = ['Product sales units', 'Target units']
+                    if 'Product sales value' in aggregated_data.columns and 'Target value' in aggregated_data.columns:
+                        bar_vars.extend(['Product sales value', 'Target value'])
                     
                     bar_data = aggregated_data.melt(
                         id_vars=['Region'],
@@ -667,15 +669,20 @@ def main():
                         value_name='Sales'
                     )
 
-                    # Rename 'Target Sales' to 'Target'
-                    bar_data['Sales Type'] = bar_data['Sales Type'].replace('Target Sales', 'Target')
+                    # Make labels more user-friendly for the chart
+                    bar_data['Sales Type'] = bar_data['Sales Type'].replace({
+                        'Product sales units': 'Product Units', 
+                        'Target units': 'Target Units',
+                        'Product sales value': 'Product Value',
+                        'Target value': 'Target Value'
+                    })
 
-                    # Calculate Market Share per region: sum(Product sales) / sum(Market sales) * 100
+                    # Calculate Market Share per region: sum(Product sales units) / sum(Market sales units) * 100
                     market_share_data = aggregated_data.copy()
-                    market_share_data['Market_Share_Pct'] = (market_share_data['Product sales'] / market_share_data['Market sales'] * 100).round(2)
+                    market_share_data['Market_Share_Pct'] = (market_share_data['Product sales units'] / market_share_data['Market sales units'] * 100).round(2)
 
                     # Calculate total Product sales per region for sorting
-                    sort_data = aggregated_data.sort_values('Product sales', ascending=False)
+                    sort_data = aggregated_data.sort_values('Product sales units', ascending=False)
 
                     # Create the bar chart for Product sales and Target sales
                     bar_chart = alt.Chart(bar_data).mark_bar().encode(
@@ -684,7 +691,7 @@ def main():
                         y=alt.Y('Sales:Q', title='Sales', axis=alt.Axis(titleColor='#1f77b4')),
                         xOffset='Sales Type:N',  # Group bars by Sales Type
                         color=alt.Color('Sales Type:N', scale=alt.Scale(
-                            domain=['Product sales', 'Target', 'Sales previous period, value', 'Plan, value'],
+                            domain=['Product Units', 'Target Units', 'Product Value', 'Target Value'],
                             range=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
                         ), legend=alt.Legend(title='Sales Type')),
                         tooltip=['Region', 'Sales Type', alt.Tooltip('Sales:Q', format='.2f')]
@@ -722,12 +729,12 @@ def main():
         ### Expected Format for Main Data
         - **Region**: Region name
         - **SKU**: Product SKU
-        - **Market sales**: Market value
-        - **Product sales**: Current product sales
+        - **Market sales**: Market sales units
+        - **Product sales**: Product sales units
         - **Product sales value**: Current product sales value
         - **GR mkt**: Market growth percentage
         - **GR product**: Product growth percentage
-        - **MS**: Market share percentage
+        - **MS**: Market share units percentage
         
         ### Expected Format for Product Targets Sheet
         - **SKU**: Matches main data SKUs
