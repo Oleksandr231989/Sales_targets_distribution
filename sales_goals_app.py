@@ -643,38 +643,24 @@ def main():
                 # Prepare data for grouped bar chart (Product sales and Target sales)
                 try:
                     # Aggregate Product sales and Target Sales by Region
-                    agg_dict = {
+                    aggregated_data = filtered_results.groupby('Region').agg({
                         'Product sales units': 'sum',
                         'Target units': 'sum',
                         'Market sales units': 'sum'
-                    }
-                    
-                    # Add value columns if they exist
-                    if 'Product sales value' in filtered_results.columns:
-                        agg_dict['Product sales value'] = 'sum'
-                    if 'Target value' in filtered_results.columns:
-                        agg_dict['Target value'] = 'sum'
-                    
-                    aggregated_data = filtered_results.groupby('Region').agg(agg_dict).reset_index()
+                    }).reset_index()
 
                     # Melt the aggregated DataFrame to long format for Altair (for bars)
-                    bar_vars = ['Product sales units', 'Target units']
-                    if 'Product sales value' in aggregated_data.columns and 'Target value' in aggregated_data.columns:
-                        bar_vars.extend(['Product sales value', 'Target value'])
-                    
                     bar_data = aggregated_data.melt(
                         id_vars=['Region'],
-                        value_vars=bar_vars,
+                        value_vars=['Product sales units', 'Target units'],
                         var_name='Sales Type',
                         value_name='Sales'
                     )
 
-                    # Make labels more user-friendly for the chart
+                    # Rename for display
                     bar_data['Sales Type'] = bar_data['Sales Type'].replace({
-                        'Product sales units': 'Product Units', 
-                        'Target units': 'Target Units',
-                        'Product sales value': 'Product Value',
-                        'Target value': 'Target Value'
+                        'Product sales units': 'Product sales', 
+                        'Target units': 'Target'
                     })
 
                     # Calculate Market Share per region: sum(Product sales units) / sum(Market sales units) * 100
@@ -691,8 +677,8 @@ def main():
                         y=alt.Y('Sales:Q', title='Sales', axis=alt.Axis(titleColor='#1f77b4')),
                         xOffset='Sales Type:N',  # Group bars by Sales Type
                         color=alt.Color('Sales Type:N', scale=alt.Scale(
-                            domain=['Product Units', 'Target Units', 'Product Value', 'Target Value'],
-                            range=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+                            domain=['Product sales', 'Target'],
+                            range=['#1f77b4', '#ff7f0e']
                         ), legend=alt.Legend(title='Sales Type')),
                         tooltip=['Region', 'Sales Type', alt.Tooltip('Sales:Q', format='.2f')]
                     )
