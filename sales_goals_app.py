@@ -725,29 +725,6 @@ def main():
                 st.error(f"Error setting up SKU filter: {e}")
     else:
         st.info("Upload an Excel file with region and SKU data to start.")
-        st.markdown("""
-        ### Expected Format for Main Data
-        - **Region**: Region name
-        - **SKU**: Product SKU
-        - **Market sales**: Market sales units
-        - **Product sales**: Product sales units
-        - **Product sales value**: Current product sales value
-        - **GR mkt**: Market growth percentage
-        - **GR product**: Product growth percentage
-        - **MS**: Market share units percentage
-        
-        ### Expected Format for Product Targets Sheet
-        - **SKU**: Matches main data SKUs
-        - **Target**: Target sales
-        - **Price**: Price per unit
-        - **Product Type**: 'Established' or 'Launch' (optional)
-        - **Growth Factor**: 0.5 to 5.0 for Established (optional)
-        - **Min Growth %**: Minimum growth percentage (optional)
-        
-        ### Expected Format for Monthly Split File
-        - **SKU**: Matches main data SKUs
-        - **Month columns**: Percentages summing to 100% per SKU
-        """)
 
 if __name__ == "__main__":
     main()
