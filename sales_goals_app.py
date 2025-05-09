@@ -59,7 +59,7 @@ def clean_percentage(value):
             return 0
     return float(value)
 
-def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types):
+def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types, sku_prices):
     """
     Calculate sales targets by SKU based on product type.
     Established products use market share index; Launch products use market size weights.
@@ -206,7 +206,27 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
             
             results.append(sku_group_with_targets)
     
-    return pd.concat(results) if results else pd.DataFrame()
+    # Add value calculations
+    combined_results = pd.concat(results) if results else pd.DataFrame()
+    
+    if not combined_results.empty:
+        # Add price information
+        for sku, price in sku_prices.items():
+            if sku in combined_results['SKU'].unique():
+                price_value = float(price) if price is not None else 0.0
+                combined_results.loc[combined_results['SKU'] == sku, 'sku_price'] = price_value
+        
+        # Calculate value metrics
+        if 'sku_price' in combined_results.columns:
+            combined_results['plan_value'] = (combined_results['targetSales'] * combined_results['sku_price']).round(2)
+            
+            # Calculate growth percentage in value
+            if 'Product sales value' in combined_results.columns:
+                combined_results['growthPercentValue'] = (
+                    (combined_results['plan_value'] / combined_results['Product sales value'] - 1) * 100
+                ).where(combined_results['Product sales value'] > 0, 0).round(2)
+    
+    return combined_results
 
 def split_targets_by_month(results_df, monthly_split_df):
     """Split target sales into monthly values based on percentages."""
@@ -248,6 +268,7 @@ def get_product_targets_from_sheet(excelFile):
         targets_df['Product Type'] = targets_df.get('Product Type', 'Established')
         targets_df['Growth Factor'] = targets_df.get('Growth Factor', 1.0)
         targets_df['Min Growth %'] = targets_df.get('Min Growth %', 0.5)
+        targets_df['Price'] = targets_df.get('Price', 0.0)  # Add Price column handling
         
         return targets_df
     except Exception as e:
@@ -262,6 +283,7 @@ def initialize_session_state():
         'sku_growth_factors': {},
         'sku_min_growth_pcts': {},
         'sku_product_types': {},
+        'sku_prices': {},  # Add prices dictionary
         'monthly_split_data': None,
         'product_targets_df': None,
         'last_selected_sku': None,
@@ -283,7 +305,7 @@ def main():
         "Upload Excel file with region/SKU data",
         type=['xlsx', 'xls'],
         key="main_data_uploader",
-        help="Upload an Excel file containing 'sales data' sheet with columns: Region, SKU, Market sales, Product sales, MS, and optionally GR mkt, GR product."
+        help="Upload an Excel file containing 'sales data' sheet with columns: Region, SKU, Market sales, Product sales, MS, Product sales value, and optionally GR mkt, GR product."
     )
     
     if uploaded_file:
@@ -312,6 +334,7 @@ def main():
                         st.session_state.sku_product_types[sku] = row.get('Product Type', 'Established')
                         st.session_state.sku_growth_factors[sku] = row.get('Growth Factor', 1.0)
                         st.session_state.sku_min_growth_pcts[sku] = row.get('Min Growth %', 0.5)
+                        st.session_state.sku_prices[sku] = row.get('Price', 0.0)  # Store the prices
             
         except Exception as e:
             st.error(f"Error reading main data file: {e}")
@@ -371,6 +394,8 @@ def main():
                     st.session_state.sku_min_growth_pcts[selected_sku] = 0.5
                 if selected_sku not in st.session_state.sku_targets:
                     st.session_state.sku_targets[selected_sku] = float(sku_totals.get(selected_sku, 0))
+                if selected_sku not in st.session_state.sku_prices:
+                    st.session_state.sku_prices[selected_sku] = 0.0
                 
                 current_total = sku_totals.get(selected_sku, 0)
                 
@@ -388,12 +413,27 @@ def main():
                             help="Set the target sales for this SKU."
                         )
                         st.session_state.sku_targets[selected_sku] = target_total
+                        
+                        # Add a price input
+                        price = st.number_input(
+                            "Price",
+                            value=float(st.session_state.sku_prices.get(selected_sku, 0.0)),
+                            step=0.01,
+                            format="%.2f",
+                            key=f"price_{selected_sku}",
+                            help="Set the price for this SKU."
+                        )
+                        st.session_state.sku_prices[selected_sku] = price
                     else:
                         target_row = st.session_state.product_targets_df[st.session_state.product_targets_df['SKU'] == selected_sku]
                         if not target_row.empty:
                             target_total = target_row.iloc[0]['Target']
                             st.session_state.sku_targets[selected_sku] = target_total
                             st.write(f"**Target Total Sales:** {target_total:,.2f}")
+                            
+                            price = target_row.iloc[0].get('Price', 0.0)
+                            st.session_state.sku_prices[selected_sku] = price
+                            st.write(f"**Price:** {price:,.2f}")
                 
                 with col_sku2:
                     if show_manual_inputs:
@@ -454,7 +494,8 @@ def main():
                             st.session_state.sku_targets,
                             st.session_state.sku_growth_factors,
                             st.session_state.sku_min_growth_pcts,
-                            st.session_state.sku_product_types
+                            st.session_state.sku_product_types,
+                            st.session_state.sku_prices  # Pass prices to the function
                         )
                     except Exception as e:
                         st.error(f"Error calculating targets: {e}")
@@ -467,12 +508,24 @@ def main():
                             except Exception as e:
                                 st.error(f"Error splitting monthly targets: {e}")
                         
-                        # Define columns to display, excluding 'marketWeight'
-                        display_cols = ['Region', 'SKU', 'Market sales', 'Product sales', 'MS', 'targetSales', 'growthAmount', 'growthPercent']
+                        # Define columns to display, including new value columns
+                        display_cols = [
+                            'Region', 'SKU', 'Market sales', 'Product sales', 'Product sales value', 'MS', 
+                            'targetSales', 'growthAmount', 'growthPercent'
+                        ]
+                        
+                        # Add value-related columns if available
+                        if 'plan_value' in results.columns:
+                            display_cols.append('plan_value')
+                        if 'growthPercentValue' in results.columns:
+                            display_cols.append('growthPercentValue')
+                            
                         month_cols = [col for col in results.columns if col.startswith('Month_')]
                         if month_cols:
                             display_cols.extend(month_cols)
                         
+                        # Ensure we only include columns that exist in the results DataFrame
+                        display_cols = [col for col in display_cols if col in results.columns]
                         results_display = results[display_cols].copy()
                         
                         # Define column renaming for display
@@ -481,11 +534,15 @@ def main():
                             'SKU': 'SKU',
                             'Market sales': 'Market sales',
                             'Product sales': 'Product sales',
+                            'Product sales value': 'Sales previous period, value',
                             'MS': 'Market Share (%)',
                             'targetSales': 'Target Sales',
                             'growthAmount': 'Growth Amount',
-                            'growthPercent': 'Growth %'
+                            'growthPercent': 'Growth %, units',
+                            'plan_value': 'Plan, value',
+                            'growthPercentValue': 'Growth %, value'
                         }
+                        
                         if st.session_state.monthly_split_data is not None:
                             month_columns = [col for col in st.session_state.monthly_split_data.columns if col != 'SKU']
                             for i, month in enumerate(month_columns):
@@ -495,10 +552,15 @@ def main():
                         
                         # Format percentages
                         results_display['Market Share (%)'] = results_display['Market Share (%)'].apply(format_percentage)
-                        results_display['Growth %'] = results_display['Growth %'].apply(format_percentage)
+                        results_display['Growth %, units'] = results_display['Growth %, units'].apply(format_percentage)
+                        if 'Growth %, value' in results_display.columns:
+                            results_display['Growth %, value'] = results_display['Growth %, value'].apply(format_percentage)
                         
                         # Round numeric columns
-                        numeric_cols = ['Market sales', 'Product sales', 'Target Sales', 'Growth Amount']
+                        numeric_cols = [
+                            'Market sales', 'Product sales', 'Sales previous period, value', 
+                            'Target Sales', 'Growth Amount', 'Plan, value'
+                        ]
                         numeric_cols.extend([col for col in results_display.columns if col.startswith('Month ')])
                         for col in numeric_cols:
                             if col in results_display.columns:
@@ -579,16 +641,28 @@ def main():
                 # Prepare data for grouped bar chart (Product sales and Target sales)
                 try:
                     # Aggregate Product sales and Target Sales by Region
-                    aggregated_data = filtered_results.groupby('Region').agg({
+                    agg_dict = {
                         'Product sales': 'sum',
                         'Target Sales': 'sum',
                         'Market sales': 'sum'
-                    }).reset_index()
+                    }
+                    
+                    # Add value columns if they exist
+                    if 'Sales previous period, value' in filtered_results.columns:
+                        agg_dict['Sales previous period, value'] = 'sum'
+                    if 'Plan, value' in filtered_results.columns:
+                        agg_dict['Plan, value'] = 'sum'
+                    
+                    aggregated_data = filtered_results.groupby('Region').agg(agg_dict).reset_index()
 
                     # Melt the aggregated DataFrame to long format for Altair (for bars)
+                    bar_vars = ['Product sales', 'Target Sales']
+                    if 'Sales previous period, value' in aggregated_data.columns and 'Plan, value' in aggregated_data.columns:
+                        bar_vars.extend(['Sales previous period, value', 'Plan, value'])
+                    
                     bar_data = aggregated_data.melt(
                         id_vars=['Region'],
-                        value_vars=['Product sales', 'Target Sales'],
+                        value_vars=bar_vars,
                         var_name='Sales Type',
                         value_name='Sales'
                     )
@@ -610,8 +684,8 @@ def main():
                         y=alt.Y('Sales:Q', title='Sales', axis=alt.Axis(titleColor='#1f77b4')),
                         xOffset='Sales Type:N',  # Group bars by Sales Type
                         color=alt.Color('Sales Type:N', scale=alt.Scale(
-                            domain=['Product sales', 'Target'],
-                            range=['#1f77b4', '#ff7f0e']
+                            domain=['Product sales', 'Target', 'Sales previous period, value', 'Plan, value'],
+                            range=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
                         ), legend=alt.Legend(title='Sales Type')),
                         tooltip=['Region', 'Sales Type', alt.Tooltip('Sales:Q', format='.2f')]
                     )
@@ -650,6 +724,7 @@ def main():
         - **SKU**: Product SKU
         - **Market sales**: Market value
         - **Product sales**: Current product sales
+        - **Product sales value**: Current product sales value
         - **GR mkt**: Market growth percentage
         - **GR product**: Product growth percentage
         - **MS**: Market share percentage
@@ -657,6 +732,7 @@ def main():
         ### Expected Format for Product Targets Sheet
         - **SKU**: Matches main data SKUs
         - **Target**: Target sales
+        - **Price**: Price per unit
         - **Product Type**: 'Established' or 'Launch' (optional)
         - **Growth Factor**: 0.5 to 5.0 for Established (optional)
         - **Min Growth %**: Minimum growth percentage (optional)
