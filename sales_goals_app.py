@@ -139,21 +139,71 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
             sku_sorted['targetSales'] = (sku_sorted['Product sales'] * (1 + sku_sorted['growthPercent'] / 100)).round(2)
             sku_sorted['growthAmount'] = (sku_sorted['targetSales'] - sku_sorted['Product sales']).round(2)
             
-            # Adjust to ensure total matches the target
+            # CRITICAL FIX: Check for negative targets and redistribute properly
+            negative_mask = sku_sorted['targetSales'] < 0
+            if negative_mask.any():
+                # Set negative targets to 0 and calculate the deficit
+                deficit = sku_sorted.loc[negative_mask, 'targetSales'].sum()  # This will be negative
+                sku_sorted.loc[negative_mask, 'targetSales'] = 0
+                
+                # Redistribute the deficit among positive regions proportionally
+                positive_mask = ~negative_mask
+                if positive_mask.any():
+                    positive_targets = sku_sorted.loc[positive_mask, 'targetSales']
+                    total_positive = positive_targets.sum()
+                    if total_positive > 0:
+                        # Add the deficit proportionally to positive regions
+                        proportion = positive_targets / total_positive
+                        sku_sorted.loc[positive_mask, 'targetSales'] += (deficit * proportion).round(2)
+            
+            # Now adjust to ensure total matches the target exactly
             current_total = sku_sorted['targetSales'].sum()
-            if current_total != total_target_sales:
+            if abs(current_total - total_target_sales) > 0.01:  # Allow for small rounding differences
                 difference = total_target_sales - current_total
-                current_growth = current_total - total_current_sales
-                if current_growth != 0:
-                    adjustment_factor = (total_target_sales - total_current_sales) / current_growth
-                    sku_sorted['growthAmount'] = (sku_sorted['growthAmount'] * adjustment_factor).round(2)
-                    sku_sorted['targetSales'] = (sku_sorted['Product sales'] + sku_sorted['growthAmount']).round(2)
-                    sku_sorted['growthPercent'] = ((sku_sorted['targetSales'] / sku_sorted['Product sales'] - 1) * 100).round(2)
+                
+                # Distribute the difference proportionally among all regions that can accept it
+                if difference > 0:
+                    # Adding more: distribute among all regions proportionally
+                    if current_total > 0:
+                        proportion = sku_sorted['targetSales'] / current_total
+                        sku_sorted['targetSales'] += (difference * proportion).round(2)
+                    else:
+                        # All regions are zero, distribute equally
+                        per_region = difference / len(sku_sorted)
+                        sku_sorted['targetSales'] = per_region
                 else:
-                    proportion = sku_sorted['Product sales'] / total_current_sales
-                    sku_sorted['growthAmount'] = (difference * proportion).round(2)
-                    sku_sorted['targetSales'] = (sku_sorted['Product sales'] + sku_sorted['growthAmount']).round(2)
-                    sku_sorted['growthPercent'] = (sku_sorted['growthAmount'] / sku_sorted['Product sales'] * 100).round(2).where(sku_sorted['Product sales'] > 0, 0)
+                    # Reducing: only reduce from regions that have positive values
+                    positive_mask = sku_sorted['targetSales'] > 0
+                    if positive_mask.any():
+                        positive_total = sku_sorted.loc[positive_mask, 'targetSales'].sum()
+                        if positive_total > 0:
+                            proportion = sku_sorted.loc[positive_mask, 'targetSales'] / positive_total
+                            reduction = (abs(difference) * proportion).round(2)
+                            sku_sorted.loc[positive_mask, 'targetSales'] -= reduction
+                            # Ensure no region goes negative after reduction
+                            sku_sorted['targetSales'] = sku_sorted['targetSales'].clip(lower=0)
+                
+                # Final adjustment: if there's still a small difference, adjust the largest region
+                final_total = sku_sorted['targetSales'].sum()
+                if abs(final_total - total_target_sales) > 0.01:
+                    final_difference = total_target_sales - final_total
+                    largest_idx = sku_sorted['targetSales'].idxmax()
+                    new_value = sku_sorted.loc[largest_idx, 'targetSales'] + final_difference
+                    if new_value >= 0:  # Only if it won't make it negative
+                        sku_sorted.loc[largest_idx, 'targetSales'] = new_value
+                    else:
+                        # If largest region can't absorb the difference, find another approach
+                        # Distribute among all positive regions
+                        positive_mask = sku_sorted['targetSales'] > 0
+                        if positive_mask.any():
+                            n_positive = positive_mask.sum()
+                            per_region_adj = final_difference / n_positive
+                            sku_sorted.loc[positive_mask, 'targetSales'] += per_region_adj
+                            sku_sorted['targetSales'] = sku_sorted['targetSales'].clip(lower=0)
+            
+            # Recalculate growth amounts and percentages
+            sku_sorted['growthAmount'] = (sku_sorted['targetSales'] - sku_sorted['Product sales']).round(2)
+            sku_sorted['growthPercent'] = ((sku_sorted['targetSales'] / sku_sorted['Product sales'] - 1) * 100).round(2).where(sku_sorted['Product sales'] > 0, 0)
             
             # Clean up temporary columns
             results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight', 'Weight']]
@@ -173,28 +223,53 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                            np.where(sku_group_with_targets['targetSales'] > 0, 100, 0))
                 ).round(2)
                 
+                # CRITICAL FIX: Handle negative targets for launch products
+                negative_mask = sku_group_with_targets['targetSales'] < 0
+                if negative_mask.any():
+                    # Set negative targets to 0 and redistribute
+                    deficit = sku_group_with_targets.loc[negative_mask, 'targetSales'].sum()
+                    sku_group_with_targets.loc[negative_mask, 'targetSales'] = 0
+                    
+                    # Redistribute among positive regions
+                    positive_mask = ~negative_mask
+                    if positive_mask.any():
+                        positive_targets = sku_group_with_targets.loc[positive_mask, 'targetSales']
+                        total_positive = positive_targets.sum()
+                        if total_positive > 0:
+                            proportion = positive_targets / total_positive
+                            sku_group_with_targets.loc[positive_mask, 'targetSales'] += (deficit * proportion).round(2)
+                
+                # Final adjustment to match exact target
                 current_total = sku_group_with_targets['targetSales'].sum()
-                if current_total != total_target_sales:
-                    idx_largest = sku_group_with_targets['Market sales'].idxmax()
-                    sku_group_with_targets.loc[idx_largest, 'targetSales'] += (total_target_sales - current_total)
-                    sku_group_with_targets.loc[idx_largest, 'growthAmount'] = (
-                        sku_group_with_targets.loc[idx_largest, 'targetSales'] - 
-                        sku_group_with_targets.loc[idx_largest, 'Product sales']
-                    ).round(2)
-                    sku_group_with_targets.loc[idx_largest, 'growthPercent'] = (
-                        (sku_group_with_targets.loc[idx_largest, 'targetSales'] / 
-                         sku_group_with_targets.loc[idx_largest, 'Product sales'] - 1) * 100
-                        if sku_group_with_targets.loc[idx_largest, 'Product sales'] > 0 
-                        else (100 if sku_group_with_targets.loc[idx_largest, 'targetSales'] > 0 else 0)
+                if abs(current_total - total_target_sales) > 0.01:
+                    difference = total_target_sales - current_total
+                    # Find the region with highest market sales that can absorb the difference
+                    eligible_regions = sku_group_with_targets[sku_group_with_targets['targetSales'] >= abs(difference) if difference < 0 else sku_group_with_targets.index]
+                    if len(eligible_regions) > 0:
+                        idx_largest = eligible_regions.loc[eligible_regions['Market sales'].idxmax()].name
+                        sku_group_with_targets.loc[idx_largest, 'targetSales'] += difference
+                        sku_group_with_targets.loc[idx_largest, 'targetSales'] = max(0, sku_group_with_targets.loc[idx_largest, 'targetSales'])
+                    
+                    # Recalculate growth metrics
+                    sku_group_with_targets['growthAmount'] = (sku_group_with_targets['targetSales'] - sku_group_with_targets['Product sales']).round(2)
+                    sku_group_with_targets['growthPercent'] = (
+                        ((sku_group_with_targets['targetSales'] / sku_group_with_targets['Product sales'] - 1) * 100)
+                        .where(sku_group_with_targets['Product sales'] > 0, 
+                               np.where(sku_group_with_targets['targetSales'] > 0, 100, 0))
                     ).round(2)
             else:
                 n_regions = len(sku_group_with_targets)
                 if n_regions > 0:
-                    per_region = round(total_target_sales / n_regions, 2)
+                    per_region = max(0, round(total_target_sales / n_regions, 2))  # Ensure non-negative
                     sku_group_with_targets['targetSales'] = per_region
-                    sku_group_with_targets.iloc[-1, sku_group_with_targets.columns.get_loc('targetSales')] += (
-                        total_target_sales - per_region * n_regions
-                    )
+                    
+                    # Handle any remainder
+                    remainder = total_target_sales - (per_region * n_regions)
+                    if abs(remainder) > 0.01:
+                        sku_group_with_targets.iloc[-1, sku_group_with_targets.columns.get_loc('targetSales')] += remainder
+                        # Ensure the final value is non-negative
+                        sku_group_with_targets.iloc[-1, sku_group_with_targets.columns.get_loc('targetSales')] = max(0, sku_group_with_targets.iloc[-1, sku_group_with_targets.columns.get_loc('targetSales')])
+                    
                     sku_group_with_targets['growthAmount'] = (
                         sku_group_with_targets['targetSales'] - sku_group_with_targets['Product sales']
                     ).round(2)
