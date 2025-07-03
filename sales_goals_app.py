@@ -607,7 +607,8 @@ def main():
                         results_display.rename(columns=column_mapping, inplace=True)
                         
                         # Format percentages
-                        results_display['Market share units'] = results_display['Market share units'].apply(format_percentage)
+                        # Fix Market share units formatting - values are already in decimal format (0.78), need to multiply by 100
+                        results_display['Market share units'] = results_display['Market share units'].apply(lambda x: f"{(x*100):.2f}".replace('.', ',') + "%")
                         results_display['Growth %, units'] = results_display['Growth %, units'].apply(format_percentage)
                         if 'Growth %, value' in results_display.columns:
                             results_display['Growth %, value'] = results_display['Growth %, value'].apply(format_percentage)
