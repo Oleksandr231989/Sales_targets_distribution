@@ -62,7 +62,7 @@ def clean_percentage(value):
 def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth_pcts, sku_product_types, sku_prices):
     """
     Calculate sales targets by SKU based on product type.
-    Established products use market share index; Launch products use market size weights.
+    FIXED VERSION: Ensures all target values are non-negative while preserving logic.
     """
     df_clean = df.copy()
     
@@ -100,9 +100,14 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
             is_decline = overall_growth_pct < 0
             
             if is_decline:
-                # In decline scenario, higher MS_Index (top performers) should have smaller reductions
-                max_decline_pct = min(overall_growth_pct * 2, min_growth_pct - 0.1)
-                effective_range = min_growth_pct - max_decline_pct
+                # FIXED DECLINE LOGIC: Ensure no negative targets
+                # Calculate base decline rate that ensures all targets stay positive
+                min_current_sales = sku_sorted['Product sales'].min()
+                max_safe_decline = -90  # Never decline more than 90%
+                
+                # Limit the decline range to prevent negative targets
+                base_decline_pct = max(overall_growth_pct * 0.7, max_safe_decline)
+                variation_range = abs(overall_growth_pct * 0.3)
                 
                 # Apply growth factor to MS_Index (higher MS_Index means less reduction)
                 adjusted_index = sku_sorted['MS_Index'].copy()
@@ -114,12 +119,24 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                 sku_sorted['Weight'] = adjusted_index / total_index
                 
                 # Calculate growth percentage: top performers get smaller reductions
-                sku_sorted['growthPercent'] = min_growth_pct - sku_sorted['Weight'] * effective_range * len(sku_sorted)
+                # The weight determines how much protection from decline each region gets
+                protection_factor = sku_sorted['Weight'] * variation_range * len(sku_sorted)
+                sku_sorted['growthPercent'] = base_decline_pct + protection_factor
+                
+                # Ensure growth percent doesn't result in negative sales
+                for idx in sku_sorted.index:
+                    current_sales = sku_sorted.loc[idx, 'Product sales']
+                    growth_pct = sku_sorted.loc[idx, 'growthPercent']
+                    
+                    # If this would result in negative sales, cap it at -95%
+                    if current_sales * (1 + growth_pct / 100) < 0.01:
+                        sku_sorted.loc[idx, 'growthPercent'] = -95
+                
             else:
-                # Growth scenario
+                # GROWTH SCENARIO (unchanged logic)
                 # Calculate the inverse index (higher for lower market share)
                 sku_sorted['Inverse_Index'] = 200 - sku_sorted['MS_Index']
-                sku_sorted['Inverse_Index'] = sku_sorted['Inverse_Index'].clip(lower=10)  # Ensure minimum value
+                sku_sorted['Inverse_Index'] = sku_sorted['Inverse_Index'].clip(lower=10)
                 
                 # Apply growth factor to the inverse index
                 if growth_factor != 1.0:
@@ -136,30 +153,53 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                 sku_sorted['growthPercent'] = min_growth_pct + sku_sorted['Inverse_Weight'] * effective_range * len(sku_sorted)
             
             # Calculate target sales based on growth percentages
-            sku_sorted['targetSales'] = (sku_sorted['Product sales'] * (1 + sku_sorted['growthPercent'] / 100)).round(2)
+            # CRITICAL FIX: Ensure target sales are never negative
+            sku_sorted['targetSales'] = (sku_sorted['Product sales'] * (1 + sku_sorted['growthPercent'] / 100)).clip(lower=0.01)
             sku_sorted['growthAmount'] = (sku_sorted['targetSales'] - sku_sorted['Product sales']).round(2)
             
-            # Adjust to ensure total matches the target
+            # FIXED ADJUSTMENT: Maintain total while ensuring no negative values
             current_total = sku_sorted['targetSales'].sum()
             if current_total != total_target_sales:
                 difference = total_target_sales - current_total
-                current_growth = current_total - total_current_sales
-                if current_growth != 0:
-                    adjustment_factor = (total_target_sales - total_current_sales) / current_growth
-                    sku_sorted['growthAmount'] = (sku_sorted['growthAmount'] * adjustment_factor).round(2)
-                    sku_sorted['targetSales'] = (sku_sorted['Product sales'] + sku_sorted['growthAmount']).round(2)
-                    sku_sorted['growthPercent'] = ((sku_sorted['targetSales'] / sku_sorted['Product sales'] - 1) * 100).round(2)
+                
+                if difference > 0:
+                    # Need to increase: distribute proportionally
+                    total_weight = sku_sorted['Product sales'].sum()
+                    for idx in sku_sorted.index:
+                        weight = sku_sorted.loc[idx, 'Product sales'] / total_weight
+                        sku_sorted.loc[idx, 'targetSales'] += difference * weight
                 else:
-                    proportion = sku_sorted['Product sales'] / total_current_sales
-                    sku_sorted['growthAmount'] = (difference * proportion).round(2)
-                    sku_sorted['targetSales'] = (sku_sorted['Product sales'] + sku_sorted['growthAmount']).round(2)
-                    sku_sorted['growthPercent'] = (sku_sorted['growthAmount'] / sku_sorted['Product sales'] * 100).round(2).where(sku_sorted['Product sales'] > 0, 0)
+                    # Need to decrease: reduce proportionally but keep above 0.01
+                    reduction_needed = abs(difference)
+                    total_reducible = (sku_sorted['targetSales'] - 0.01).sum()
+                    
+                    if total_reducible > reduction_needed:
+                        # Can reduce proportionally
+                        for idx in sku_sorted.index:
+                            current_target = sku_sorted.loc[idx, 'targetSales']
+                            reducible_amount = max(0, current_target - 0.01)
+                            weight = reducible_amount / total_reducible if total_reducible > 0 else 0
+                            reduction = min(reducible_amount, reduction_needed * weight)
+                            sku_sorted.loc[idx, 'targetSales'] = max(0.01, current_target - reduction)
+                    else:
+                        # Set all to minimum and adjust the largest
+                        sku_sorted['targetSales'] = 0.01
+                        remaining = total_target_sales - len(sku_sorted) * 0.01
+                        if remaining > 0:
+                            # Give remainder to region with highest current sales
+                            idx_max = sku_sorted['Product sales'].idxmax()
+                            sku_sorted.loc[idx_max, 'targetSales'] += remaining
+                
+                # Recalculate growth metrics
+                sku_sorted['growthAmount'] = (sku_sorted['targetSales'] - sku_sorted['Product sales']).round(2)
+                sku_sorted['growthPercent'] = ((sku_sorted['targetSales'] / sku_sorted['Product sales'] - 1) * 100).round(2)
             
             # Clean up temporary columns
             results_columns = [col for col in sku_sorted.columns if col not in ['MS_Index', 'Inverse_Index', 'Inverse_Weight', 'Weight']]
             results.append(sku_sorted[results_columns])
+            
         else:
-            # Launch products logic
+            # LAUNCH PRODUCTS LOGIC (unchanged)
             sku_group_with_targets = sku_group.copy()
             total_market_size = sku_group_with_targets['Market sales'].sum()
             
@@ -204,6 +244,8 @@ def calculate_targets_by_sku(df, sku_targets, sku_growth_factors, sku_min_growth
                                np.where(sku_group_with_targets['targetSales'] > 0, 100, 0))
                     ).round(2)
             
+            # Ensure no negative targets for launch products too
+            sku_group_with_targets['targetSales'] = sku_group_with_targets['targetSales'].clip(lower=0.01)
             results.append(sku_group_with_targets)
     
     # Add value calculations
@@ -268,7 +310,7 @@ def get_product_targets_from_sheet(excelFile):
         targets_df['Product Type'] = targets_df.get('Product Type', 'Established')
         targets_df['Growth Factor'] = targets_df.get('Growth Factor', 1.0)
         targets_df['Min Growth %'] = targets_df.get('Min Growth %', 0.5)
-        targets_df['Price'] = targets_df.get('Price', 0.0)  # Add Price column handling
+        targets_df['Price'] = targets_df.get('Price', 0.0)
         
         return targets_df
     except Exception as e:
@@ -283,12 +325,12 @@ def initialize_session_state():
         'sku_growth_factors': {},
         'sku_min_growth_pcts': {},
         'sku_product_types': {},
-        'sku_prices': {},  # Add prices dictionary
+        'sku_prices': {},
         'monthly_split_data': None,
         'product_targets_df': None,
         'last_selected_sku': None,
-        'selected_skus': None,  # Added for SKU filter persistence
-        'results_display': None  # Added to persist calculated results
+        'selected_skus': None,
+        'results_display': None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -334,7 +376,7 @@ def main():
                         st.session_state.sku_product_types[sku] = row.get('Product Type', 'Established')
                         st.session_state.sku_growth_factors[sku] = row.get('Growth Factor', 1.0)
                         st.session_state.sku_min_growth_pcts[sku] = row.get('Min Growth %', 0.5)
-                        st.session_state.sku_prices[sku] = row.get('Price', 0.0)  # Store the prices
+                        st.session_state.sku_prices[sku] = row.get('Price', 0.0)
             
         except Exception as e:
             st.error(f"Error reading main data file: {e}")
@@ -414,7 +456,6 @@ def main():
                         )
                         st.session_state.sku_targets[selected_sku] = target_total
                         
-                        # Add a price input
                         price = st.number_input(
                             "Price",
                             value=float(st.session_state.sku_prices.get(selected_sku, 0.0)),
@@ -495,8 +536,21 @@ def main():
                             st.session_state.sku_growth_factors,
                             st.session_state.sku_min_growth_pcts,
                             st.session_state.sku_product_types,
-                            st.session_state.sku_prices  # Pass prices to the function
+                            st.session_state.sku_prices
                         )
+                        
+                        # FINAL SAFETY CHECK: Ensure no negative targets
+                        if not results.empty and 'targetSales' in results.columns:
+                            negative_count = (results['targetSales'] < 0).sum()
+                            if negative_count > 0:
+                                st.warning(f"Found {negative_count} negative target values. Setting to minimum 0.01.")
+                                results['targetSales'] = results['targetSales'].clip(lower=0.01)
+                                # Recalculate dependent fields
+                                results['growthAmount'] = (results['targetSales'] - results['Product sales']).round(2)
+                                results['growthPercent'] = ((results['targetSales'] / results['Product sales'] - 1) * 100).round(2)
+                                if 'plan_value' in results.columns:
+                                    results['plan_value'] = (results['targetSales'] * results['sku_price']).round(2)
+                        
                     except Exception as e:
                         st.error(f"Error calculating targets: {e}")
                         return
@@ -570,6 +624,11 @@ def main():
                         
                         # Store results in session state
                         st.session_state.results_display = results_display
+                        
+                        # Display summary of targets
+                        st.success("✅ Targets calculated successfully!")
+                        st.info(f"**Validation:** All {len(results_display)} target values are ≥ 0.01")
+                        
                     else:
                         st.warning("No results generated. Check SKU targets.")
                         return
@@ -617,13 +676,13 @@ def main():
 
                 # Initialize session state for selected SKUs if not already set
                 if 'selected_skus' not in st.session_state:
-                    st.session_state['selected_skus'] = sku_options  # Default to all SKUs
+                    st.session_state['selected_skus'] = sku_options
 
                 # Update selected SKUs based on user input
                 selected_skus = st.multiselect(
                     "Select SKUs to Display",
                     options=sku_options,
-                    default=st.session_state['selected_skus'],  # Use session state for persistence
+                    default=st.session_state['selected_skus'],
                     key="sku_filter"
                 )
 
@@ -673,9 +732,9 @@ def main():
                     # Create the bar chart for Product sales and Target sales
                     bar_chart = alt.Chart(bar_data).mark_bar().encode(
                         x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45), 
-                                sort=sort_data['Region'].tolist()),  # Sort regions by Product sales
+                                sort=sort_data['Region'].tolist()),
                         y=alt.Y('Sales:Q', title='Sales', axis=alt.Axis(titleColor='#1f77b4')),
-                        xOffset='Sales Type:N',  # Group bars by Sales Type
+                        xOffset='Sales Type:N',
                         color=alt.Color('Sales Type:N', scale=alt.Scale(
                             domain=['Product sales', 'Target'],
                             range=['#1f77b4', '#ff7f0e']
@@ -686,14 +745,14 @@ def main():
                     # Create the line chart for Market Share on a secondary axis
                     line_chart = alt.Chart(market_share_data).mark_line(color='green').encode(
                         x=alt.X('Region:N', title='Region', axis=alt.Axis(labelAngle=45), 
-                                sort=sort_data['Region'].tolist()),  # Apply the same sorting
+                                sort=sort_data['Region'].tolist()),
                         y=alt.Y('Market_Share_Pct:Q', title='Market Share (%)', axis=alt.Axis(titleColor='green')),
                         tooltip=['Region', alt.Tooltip('Market_Share_Pct:Q', title='Market Share (%)', format='.2f')]
                     )
 
                     # Combine the bar and line charts with a dual axis
                     combined_chart = alt.layer(bar_chart, line_chart).resolve_scale(
-                        y='independent'  # Use independent y-axes for Sales and Market Share
+                        y='independent'
                     ).properties(
                         height=600,
                         width='container'
